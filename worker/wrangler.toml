@@ -1,9 +1,0 @@
-name = "site"
-main = "src/index.js"
-compatibility_date = "2026-02-24"
-
-# D1 binding
-[[d1_databases]]
-binding = "DB"
-database_name = "blog-db"
-database_id = "2ca346c4-c515-4fd2-a2a7-133fdad2f31d"
