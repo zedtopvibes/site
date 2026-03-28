@@ -1,0 +1,31 @@
+name = "music-bot"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# AI Binding
+[ai]
+binding = "AI"
+
+# D1 Database (add when you create it)
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "music-library"
+# database_id = "your-database-id"
+
+# R2 Bucket (add when you create it)
+# [[r2_buckets]]
+# binding = "MUSIC_BUCKET"
+# bucket_name = "music-files"
+
+# Environment Variables (NO secrets here!)
+[vars]
+# TELEGRAM_BOT_TOKEN is set as a SECRET, not here
+# ADMIN_IDS = "123456789,987654321"  # Optional, set as secret
+
+# For production
+[env.production]
+# Add production-specific settings here
+
+# For preview
+[env.preview]
+# Add preview-specific settings here
