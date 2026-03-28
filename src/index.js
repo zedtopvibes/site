@@ -13,82 +13,133 @@ export default {
       const messageId = message.message_id;
       const token = env.TELEGRAM_BOT_TOKEN;
       
-      // Show typing indicator
-      await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
-        method: 'POST',
-        body: JSON.stringify({ chat_id: chatId, action: 'typing' })
-      });
+      // ========== TEXT TASKS (with auto-delete) ==========
       
-      // === TEST COMMANDS WITH AUTO-DELETE ===
-      
-      // Test 1: Simple ping
+      // Task 1: Ping test
       if (userMessage === '/ping') {
         await sendAndDelete(chatId, "🏓 Pong! ✅", token, 3);
         return new Response('OK');
       }
       
-      // Test 2: Echo with cleanup
-      if (userMessage.startsWith('/echo')) {
-        const text = userMessage.replace('/echo', '').trim();
-        await sendAndDelete(chatId, `📢 You said: ${text}`, token, 4);
-        return new Response('OK');
-      }
-      
-      // Test 3: Search simulation
-      if (userMessage.toLowerCase().includes('search') || userMessage === '/search') {
-        await sendAndDelete(chatId, "🔍 Searching...", token, 2);
+      // Task 2: Search simulation
+      if (userMessage === '/search') {
+        await sendAndDelete(chatId, "🔍 Searching library...", token, 2);
         await new Promise(r => setTimeout(r, 1500));
-        await sendAndDelete(chatId, "✅ Search complete! Found results.", token, 3);
+        await sendAndDelete(chatId, "✅ Found 3 matching songs!", token, 3);
         return new Response('OK');
       }
       
-      // Test 4: Error simulation
+      // Task 3: Error simulation
       if (userMessage === '/error') {
-        await sendAndDelete(chatId, "❌ Something went wrong. Try again.", token, 4);
+        await sendAndDelete(chatId, "❌ Error: Song not found in library", token, 4);
         return new Response('OK');
       }
       
-      // Test 5: Multi-step task
+      // Task 4: Multi-step task
       if (userMessage === '/task') {
-        await sendAndDelete(chatId, "⏳ Step 1/3: Initializing...", token, 2);
+        await sendAndDelete(chatId, "📊 Step 1/3: Analyzing...", token, 2);
         await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "⚙️ Step 2/3: Processing data...", token, 2);
+        await sendAndDelete(chatId, "⚙️ Step 2/3: Processing...", token, 2);
         await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "✅ Step 3/3: Complete! Task finished.", token, 4);
+        await sendAndDelete(chatId, "✅ Step 3/3: Complete!", token, 3);
         return new Response('OK');
       }
       
-      // Test 6: Help with auto-delete
-      if (userMessage === '/test') {
-        const helpText = `🧪 *Test Commands*
+      // Task 5: Echo (with cleanup)
+      if (userMessage.startsWith('/echo ')) {
+        const text = userMessage.replace('/echo ', '');
+        await sendAndDelete(chatId, `📢 You said: "${text}"`, token, 4);
+        return new Response('OK');
+      }
+      
+      // Task 6: Help menu
+      if (userMessage === '/tasks') {
+        const helpText = `🧪 *Available Tasks*
         
 /ping — Test response
-/echo [text] — Echo with cleanup
 /search — Simulate search
 /error — Show error message
-/task — Multi-step task
-/help — Show this menu
+/task — Multi-step progress
+/echo [text] — Echo with cleanup
+/status — System status
+/random — Random number
+/weather — Weather simulation
 
-*Features:* All responses auto-delete after 3-5 seconds!`;
+*All responses auto-delete after 3-5 seconds!*`;
         
-        await sendAndDelete(chatId, helpText, token, 8);
+        await sendAndDelete(chatId, helpText, token, 10);
         return new Response('OK');
       }
       
-      // Default: AI response with cleanup
+      // Task 7: Status check
+      if (userMessage === '/status') {
+        await sendAndDelete(chatId, "📊 Checking system status...", token, 2);
+        await new Promise(r => setTimeout(r, 1000));
+        await sendAndDelete(chatId, "✅ Database: Connected\n✅ AI: Ready\n✅ Storage: Online", token, 5);
+        return new Response('OK');
+      }
+      
+      // Task 8: Random number
+      if (userMessage === '/random') {
+        const num = Math.floor(Math.random() * 100) + 1;
+        await sendAndDelete(chatId, `🎲 Random number: ${num}`, token, 4);
+        return new Response('OK');
+      }
+      
+      // Task 9: Weather simulation
+      if (userMessage === '/weather') {
+        const conditions = ['☀️ Sunny', '🌧️ Rainy', '☁️ Cloudy', '🌤️ Partly Cloudy'];
+        const temp = Math.floor(Math.random() * 30) + 10;
+        const randomCondition = conditions[Math.floor(Math.random() * conditions.length)];
+        await sendAndDelete(chatId, `🌤️ Weather: ${randomCondition}\n🌡️ Temperature: ${temp}°C`, token, 5);
+        return new Response('OK');
+      }
+      
+      // Task 10: Countdown
+      if (userMessage === '/countdown') {
+        await sendAndDelete(chatId, "⏳ 3...", token, 1);
+        await new Promise(r => setTimeout(r, 1000));
+        await sendAndDelete(chatId, "⏳ 2...", token, 1);
+        await new Promise(r => setTimeout(r, 1000));
+        await sendAndDelete(chatId, "⏳ 1...", token, 1);
+        await new Promise(r => setTimeout(r, 1000));
+        await sendAndDelete(chatId, "🎉 Blast off!", token, 3);
+        return new Response('OK');
+      }
+      
+      // ========== END TEXT TASKS ==========
+      
+      // Send typing indicator for AI
+      await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          action: 'typing'
+        })
+      });
+      
+      // AI response for regular messages
       const aiResponse = await env.AI.run(
         "@cf/meta/llama-3.1-8b-instruct",
         {
           messages: [
-            { role: "system", content: "You are a helpful assistant. Keep responses short." },
-            { role: "user", content: userMessage }
+            {
+              role: "system",
+              content: "You are a helpful assistant. Keep responses short and friendly."
+            },
+            {
+              role: "user",
+              content: userMessage
+            }
           ]
         }
       );
       
-      // Send AI response (permanent)
+      // Send AI reply (permanent)
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
           text: aiResponse.response,
@@ -96,20 +147,21 @@ export default {
         })
       });
       
-      // Send completion confirmation (auto-delete)
+      // Send temporary "done" message (auto-delete)
       await sendAndDelete(chatId, "✅ Done!", token, 2);
       
       return new Response('OK');
     }
     
-    return new Response('Test Bot with Auto-Delete! Try /test');
+    return new Response('AI Bot is running! Send a message on Telegram to test.');
   }
 };
 
-// Auto-delete helper
+// Helper function for auto-delete messages
 async function sendAndDelete(chatId, text, token, seconds = 3) {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: chatId,
       text: text,
@@ -118,17 +170,19 @@ async function sendAndDelete(chatId, text, token, seconds = 3) {
   });
   
   const data = await response.json();
-  const messageId = data.result.message_id;
   
-  setTimeout(async () => {
-    await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
-      method: 'POST',
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_id: messageId
-      })
-    });
-  }, seconds * 1000);
-  
-  return messageId;
+  if (data.ok && data.result) {
+    const messageId = data.result.message_id;
+    
+    setTimeout(async () => {
+      await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId
+        })
+      }).catch(e => console.log('Delete failed:', e));
+    }, seconds * 1000);
+  }
 }
