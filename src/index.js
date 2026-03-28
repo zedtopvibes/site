@@ -12,14 +12,15 @@ export default {
       
       const chatId = message.chat.id;
       const userMessage = message.text;
+      const messageId = message.message_id;  // ← Get original message ID
       
-      // 🔥 NEW: Send typing indicator immediately
+      // Send typing indicator
       await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
-          action: 'typing'  // Shows "Bot is typing..." in Telegram
+          action: 'typing'
         })
       });
       
@@ -40,13 +41,14 @@ export default {
         }
       );
       
-      // Send AI response back to Telegram
+      // Send AI response as a REPLY to the original message
       await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
-          text: aiResponse.response
+          text: aiResponse.response,
+          reply_to_message_id: messageId  // ← This makes it a reply
         })
       });
       
