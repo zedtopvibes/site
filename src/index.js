@@ -19,9 +19,8 @@ export default {
       const messageId = message.message_id;
       const token = env.TELEGRAM_BOT_TOKEN;
       
-      // ========== FAST COMMANDS (NO AI) ==========
+      // ========== FAST COMMANDS ==========
       
-      // /start
       if (userMessage === '/start') {
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
@@ -43,20 +42,18 @@ export default {
         return new Response('OK');
       }
       
-      // /help
       if (userMessage === '/help') {
         const helpText = `🎵 *ZEDTOP VIBES Bot Commands*
         
 *🎤 Music:*
-• Send any artist name (e.g., "Yo Maps")
-• Send any song title (e.g., "Ndipe Mwe")
+• Send any artist name (e.g., "Kanina")
+• Send any song title (e.g., "Hello Rebecca")
 • /artist [name] — Artist details
 • /track [title] — Get a song
 • /genre [genre] — Browse by genre
 
 *📋 Test Commands:*
 /testdb — Check database connection
-/testr2 — Check R2 storage
 
 *✨ Just type naturally!*`;
         
@@ -73,7 +70,6 @@ export default {
         return new Response('OK');
       }
       
-      // /ping
       if (userMessage === '/ping') {
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
@@ -87,30 +83,35 @@ export default {
         return new Response('OK');
       }
       
-      // ========== TEST DATABASE CONNECTION ==========
+      // ========== TEST DATABASE ==========
       
       if (userMessage === '/testdb') {
         await sendAction(chatId, 'typing', token);
         
         try {
-          // Test 1: Count tracks
+          // Get published tracks count
           const trackCount = await env.DB.prepare(`
-            SELECT COUNT(*) as count FROM tracks WHERE status = 'active' AND deleted_at IS NULL
+            SELECT COUNT(*) as count FROM tracks 
+            WHERE status = 'published' AND deleted_at IS NULL
           `).first();
           
-          // Test 2: Get sample tracks
+          // Get published artists count
+          const artistCount = await env.DB.prepare(`
+            SELECT COUNT(*) as count FROM artists 
+            WHERE status = 'published' AND deleted_at IS NULL
+          `).first();
+          
+          // Get sample tracks with artists
           const sampleTracks = await env.DB.prepare(`
-            SELECT t.title, a.name as artist_name
+            SELECT t.id, t.title, a.name as artist_name
             FROM tracks t
-            JOIN artists a ON t.artist_id = a.id
-            WHERE t.status = 'active' AND t.deleted_at IS NULL
+            JOIN track_artists ta ON t.id = ta.track_id
+            JOIN artists a ON ta.artist_id = a.id
+            WHERE ta.is_primary = 1 
+              AND t.status = 'published' 
+              AND t.deleted_at IS NULL
             LIMIT 5
           `).all();
-          
-          // Test 3: Count artists
-          const artistCount = await env.DB.prepare(`
-            SELECT COUNT(*) as count FROM artists WHERE status = 'active' AND deleted_at IS NULL
-          `).first();
           
           let response = `📊 *Database Status*\n\n`;
           response += `✅ Connected to D1\n`;
@@ -122,8 +123,6 @@ export default {
             sampleTracks.results.forEach((t, i) => {
               response += `${i+1}. ${t.title} — ${t.artist_name}\n`;
             });
-          } else {
-            response += `❌ No tracks found in database.\n`;
           }
           
           await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
@@ -135,42 +134,12 @@ export default {
         return new Response('OK');
       }
       
-      // ========== TEST R2 CONNECTION ==========
-      
-      if (userMessage === '/testr2') {
-        await sendAction(chatId, 'typing', token);
-        
-        try {
-          const files = await env.AUDIO.list();
-          
-          let response = `📁 *R2 Storage Status*\n\n`;
-          response += `✅ Connected to R2\n`;
-          response += `📦 Total files: ${files.objects?.length || 0}\n\n`;
-          
-          if (files.objects && files.objects.length > 0) {
-            response += `*Sample files:*\n`;
-            files.objects.slice(0, 5).forEach((file, i) => {
-              response += `${i+1}. ${file.key}\n`;
-            });
-          } else {
-            response += `❌ No files found in R2 bucket.\n`;
-          }
-          
-          await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
-          
-        } catch (error) {
-          await sendMessage(chatId, `❌ R2 error: ${error.message}`, token);
-        }
-        
-        return new Response('OK');
-      }
-      
       // ========== ARTIST SEARCH ==========
       
       if (userMessage.startsWith('/artist')) {
         const artistName = userMessage.replace('/artist', '').trim();
         if (!artistName) {
-          await sendMessage(chatId, "Please provide an artist name. Example: /artist Yo Maps", token);
+          await sendMessage(chatId, "Please provide an artist name. Example: /artist Kanina", token);
           return new Response('OK');
         }
         
@@ -179,7 +148,7 @@ export default {
         const artist = await env.DB.prepare(`
           SELECT id, name, bio, country, genre, image_url
           FROM artists 
-          WHERE name LIKE ? AND status = 'active' AND deleted_at IS NULL
+          WHERE name LIKE ? AND status = 'published' AND deleted_at IS NULL
         `).bind(`%${artistName}%`).first();
         
         if (!artist) {
@@ -187,24 +156,28 @@ export default {
           return new Response('OK');
         }
         
-        // Get artist's tracks
+        // Get artist's tracks via track_artists
         const tracks = await env.DB.prepare(`
-          SELECT id, title, duration, genre
-          FROM tracks 
-          WHERE artist_id = ? AND status = 'active' AND deleted_at IS NULL
-          ORDER BY title ASC
+          SELECT t.id, t.title, t.duration, t.genre
+          FROM tracks t
+          JOIN track_artists ta ON t.id = ta.track_id
+          WHERE ta.artist_id = ? 
+            AND ta.is_primary = 1
+            AND t.status = 'published' 
+            AND t.deleted_at IS NULL
+          ORDER BY t.id DESC
           LIMIT 10
         `).bind(artist.id).all();
         
         let response = `🎤 *${artist.name}*\n\n`;
         if (artist.bio) response += `${artist.bio.substring(0, 200)}...\n\n`;
-        response += `🎸 ${artist.genre || 'Various'}\n`;
-        response += `🇿🇲 ${artist.country || 'Zambia'}\n\n`;
+        if (artist.genre) response += `🎸 ${artist.genre}\n`;
+        if (artist.country) response += `🇿🇲 ${artist.country}\n\n`;
         
         if (tracks.results.length > 0) {
           response += `*Tracks:*\n`;
           tracks.results.forEach((track, i) => {
-            response += `${i+1}. *${track.title}* — ${track.duration ? formatDuration(track.duration) : '?'}\n`;
+            response += `${i+1}. *${track.title}*\n`;
           });
           response += `\nUse /track [title] to download.`;
         } else {
@@ -220,19 +193,23 @@ export default {
       if (userMessage.startsWith('/track')) {
         const trackTitle = userMessage.replace('/track', '').trim();
         if (!trackTitle) {
-          await sendMessage(chatId, "Please provide a track name. Example: /track Ndipe Mwe", token);
+          await sendMessage(chatId, "Please provide a track name. Example: /track Hello Rebecca", token);
           return new Response('OK');
         }
         
         await sendAction(chatId, 'typing', token);
         
-        // Search for track
+        // Search for track with primary artist via track_artists
         const track = await env.DB.prepare(`
-          SELECT t.id, t.title, t.description, t.r2_key, t.duration, t.genre, 
+          SELECT t.id, t.title, t.r2_key, t.duration, t.genre, 
                  t.artwork_url, a.name as artist_name
           FROM tracks t
-          JOIN artists a ON t.artist_id = a.id
-          WHERE t.title LIKE ? AND t.status = 'active' AND t.deleted_at IS NULL
+          JOIN track_artists ta ON t.id = ta.track_id
+          JOIN artists a ON ta.artist_id = a.id
+          WHERE t.title LIKE ? 
+            AND ta.is_primary = 1
+            AND t.status = 'published' 
+            AND t.deleted_at IS NULL
           ORDER BY t.id DESC
           LIMIT 1
         `).bind(`%${trackTitle}%`).first();
@@ -274,26 +251,18 @@ export default {
         formData.append('performer', track.artist_name);
         if (track.duration) formData.append('duration', track.duration);
         
-        // Add caption with info
         let caption = `🎵 *${track.title}* — ${track.artist_name}`;
         if (track.genre) caption += `\n🏷️ Genre: ${track.genre}`;
         if (track.duration) caption += `\n⏱️ Duration: ${formatDuration(track.duration)}`;
         formData.append('caption', caption);
         formData.append('parse_mode', 'Markdown');
         
-        // Send audio file
-        const audioResponse = await fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
+        await fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
           method: 'POST',
           body: formData
         });
         
-        // Delete thinking message
         await deleteMessage(chatId, thinkingMsgId, token);
-        
-        if (!audioResponse.ok) {
-          await sendMessage(chatId, "❌ Failed to send file. Try again later.", token);
-        }
-        
         return new Response('OK');
       }
       
@@ -302,17 +271,21 @@ export default {
       if (userMessage.startsWith('/genre')) {
         const genre = userMessage.replace('/genre', '').trim().toLowerCase();
         if (!genre) {
-          await sendMessage(chatId, "Please provide a genre. Example: /genre Gospel", token);
+          await sendMessage(chatId, "Please provide a genre. Example: /genre Hip-Hop", token);
           return new Response('OK');
         }
         
         await sendAction(chatId, 'typing', token);
         
         const tracks = await env.DB.prepare(`
-          SELECT t.id, t.title, a.name as artist_name, t.duration
+          SELECT t.id, t.title, a.name as artist_name
           FROM tracks t
-          JOIN artists a ON t.artist_id = a.id
-          WHERE LOWER(t.genre) LIKE ? AND t.status = 'active' AND t.deleted_at IS NULL
+          JOIN track_artists ta ON t.id = ta.track_id
+          JOIN artists a ON ta.artist_id = a.id
+          WHERE LOWER(t.genre) LIKE ? 
+            AND ta.is_primary = 1
+            AND t.status = 'published' 
+            AND t.deleted_at IS NULL
           ORDER BY t.id DESC
           LIMIT 15
         `).bind(`%${genre}%`).all();
@@ -334,64 +307,24 @@ export default {
       
       // ========== NATURAL LANGUAGE SEARCH ==========
       
-      // Check if it's a music query (not a command)
       if (!userMessage.startsWith('/')) {
         await sendAction(chatId, 'typing', token);
         
-        console.log(`Searching for: "${userMessage}"`);
-        
-        // Try direct track search (exact match first)
+        // First, try direct track search
         let track = await env.DB.prepare(`
-          SELECT t.id, t.title, t.r2_key, t.duration, t.genre, 
-                 a.name as artist_name, t.artist_id
+          SELECT t.id, t.title, t.r2_key, t.duration, t.genre, a.name as artist_name
           FROM tracks t
-          JOIN artists a ON t.artist_id = a.id
-          WHERE t.title LIKE ? AND t.status = 'active' AND t.deleted_at IS NULL
+          JOIN track_artists ta ON t.id = ta.track_id
+          JOIN artists a ON ta.artist_id = a.id
+          WHERE t.title LIKE ? 
+            AND ta.is_primary = 1
+            AND t.status = 'published' 
+            AND t.deleted_at IS NULL
           LIMIT 1
         `).bind(`%${userMessage}%`).first();
         
-        // If no track, try searching by artist
-        if (!track) {
-          console.log(`No track found, trying artist search for: "${userMessage}"`);
-          
-          const artist = await env.DB.prepare(`
-            SELECT id, name, genre
-            FROM artists 
-            WHERE name LIKE ? AND status = 'active' AND deleted_at IS NULL
-            LIMIT 1
-          `).bind(`%${userMessage}%`).first();
-          
-          if (artist) {
-            console.log(`Found artist: ${artist.name}`);
-            
-            // Get artist's tracks
-            const artistTracks = await env.DB.prepare(`
-              SELECT id, title, duration
-              FROM tracks 
-              WHERE artist_id = ? AND status = 'active' AND deleted_at IS NULL
-              LIMIT 10
-            `).bind(artist.id).all();
-            
-            let response = `🎤 *${artist.name}*\n\n`;
-            if (artistTracks.results.length > 0) {
-              response += `*Tracks:*\n`;
-              artistTracks.results.forEach((t, i) => {
-                response += `${i+1}. *${t.title}*\n`;
-              });
-              response += `\nUse /track [title] to download.`;
-            } else {
-              response += `No tracks found for this artist yet.`;
-            }
-            
-            await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
-            return new Response('OK');
-          }
-        }
-        
-        // If track found, send it
         if (track) {
-          console.log(`Found track: ${track.title} by ${track.artist_name}`);
-          
+          // Send the track
           const thinking = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: 'POST',
             body: JSON.stringify({
@@ -427,24 +360,53 @@ export default {
             });
             
             await deleteMessage(chatId, thinkingMsgId, token);
-          } else {
-            await editMessage(chatId, thinkingMsgId, "❌ File not found in storage.", token);
           }
-          
           return new Response('OK');
         }
         
-        // No matches found
-        console.log(`No matches found for: "${userMessage}"`);
+        // If no track, try artist search
+        const artist = await env.DB.prepare(`
+          SELECT id, name, genre
+          FROM artists 
+          WHERE name LIKE ? AND status = 'published' AND deleted_at IS NULL
+          LIMIT 1
+        `).bind(`%${userMessage}%`).first();
         
+        if (artist) {
+          const tracks = await env.DB.prepare(`
+            SELECT t.id, t.title
+            FROM tracks t
+            JOIN track_artists ta ON t.id = ta.track_id
+            WHERE ta.artist_id = ? 
+              AND ta.is_primary = 1
+              AND t.status = 'published' 
+              AND t.deleted_at IS NULL
+            LIMIT 10
+          `).bind(artist.id).all();
+          
+          let response = `🎤 *${artist.name}*\n\n`;
+          if (tracks.results.length > 0) {
+            response += `*Tracks:*\n`;
+            tracks.results.forEach((t, i) => {
+              response += `${i+1}. *${t.title}*\n`;
+            });
+            response += `\nUse /track [title] to download.`;
+          } else {
+            response += `No tracks found.`;
+          }
+          
+          await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
+          return new Response('OK');
+        }
+        
+        // No matches
         await sendMessage(chatId, 
           `🎵 *ZEDTOP VIBES*\n\n` +
           `I couldn't find "${userMessage}" in the library.\n\n` +
           `Try:\n` +
-          `• /artist [name] — Search by artist\n` +
-          `• /track [title] — Search by song\n` +
-          `• /genre [genre] — Browse by genre\n\n` +
-          `Or check if the artist/song is in our database.`,
+          `• /artist [name]\n` +
+          `• /track [title]\n` +
+          `• /genre [genre]`,
           token,
           { parse_mode: 'Markdown' }
         );
@@ -452,17 +414,11 @@ export default {
         return new Response('OK');
       }
       
-      // ========== UNKNOWN COMMAND ==========
-      
-      await sendMessage(chatId, 
-        `❌ Unknown command. Try /help to see available commands.`, 
-        token
-      );
-      
+      await sendMessage(chatId, `❌ Unknown command. Try /help.`, token);
       return new Response('OK');
     }
     
-    return new Response('ZEDTOP VIBES Bot is running! Send /start to begin.');
+    return new Response('ZEDTOP VIBES Bot is running!');
   }
 };
 
@@ -482,11 +438,9 @@ async function sendMessage(chatId, text, token, options = {}) {
     text: text,
     parse_mode: options.parse_mode || 'Markdown'
   };
-  
   if (options.reply_to_message_id) {
     payload.reply_to_message_id = options.reply_to_message_id;
   }
-  
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
