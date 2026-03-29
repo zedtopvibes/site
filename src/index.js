@@ -4,125 +4,124 @@ export default {
 
     try {
       const update = await request.json();
+      const botToken = env.TELEGRAM_BOT_TOKEN;
 
-      // 1. Handle Messages (Commands & Search)
+      // Handle Message Text (Search & Commands)
       if (update.message?.text) {
         const { chat, text } = update.message;
         const chatId = chat.id;
 
         if (text === "/start") {
-          return this.sendMessage(chatId, "🎵 *ZedTopVibes Bot Ready*\n\n• Send a keyword to **search**\n• Use /list to see **all files**", env);
+          return this.tg(botToken, "sendMessage", {
+            chat_id: chatId,
+            text: "🎵 *ZedTopVibes R2 Explorer*\n\n• Type /list to see all files\n• Send any text to **search** the bucket",
+            parse_mode: "Markdown"
+          });
         }
 
         if (text === "/list") {
           return this.handleList(chatId, env);
         }
 
-        // Treat any other text as a search query
+        // Default to Search
         return this.handleSearch(chatId, text, env);
       }
 
-      // 2. Handle Button Clicks (Callbacks)
+      // Handle Button Clicks (Downloads)
       if (update.callback_query) {
         const { id, message, data } = update.callback_query;
-        // Format: "dl:filename.mp3"
         if (data.startsWith("dl:")) {
           const fileName = data.split("dl:")[1];
-          await this.answerCallback(id, "Fetching file...", env);
+          await this.tg(botToken, "answerCallbackQuery", { callback_query_id: id, text: "⏬ Fetching from R2..." });
           return this.sendR2File(message.chat.id, fileName, env);
         }
       }
 
-      return new Response("OK");
     } catch (err) {
-      return new Response(err.stack, { status: 500 });
+      console.error(err);
     }
+    return new Response("OK");
   },
 
-  // --- FEATURES ---
-
+  // FEATURE: List all files in R2 with buttons
   async handleList(chatId, env) {
-    const list = await env.AUDIO.list({ limit: 10 });
-    if (list.objects.length === 0) return this.sendMessage(chatId, "Storage is empty.", env);
+    const list = await env.AUDIO.list({ limit: 20 });
+    
+    if (list.objects.length === 0) {
+      return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", { chat_id: chatId, text: "The R2 bucket is currently empty." });
+    }
 
     const buttons = list.objects.map(obj => ([{
-      text: `📥 ${obj.key}`,
-      callback_data: `dl:${obj.key}`
-    }]));
-
-    return this.sendMessage(chatId, "📂 *Latest Uploads:*", env, { inline_keyboard: buttons });
-  },
-
-  async handleSearch(chatId, query, env) {
-    // R2 list allows prefixing; for a "true" search without a DB, we list and filter
-    const list = await env.AUDIO.list(); 
-    const matches = list.objects.filter(obj => 
-      obj.key.toLowerCase().includes(query.toLowerCase())
-    ).slice(0, 8); // Limit to 8 results for the UI
-
-    if (matches.length === 0) {
-      return this.sendMessage(chatId, `❌ No results for "${query}"`, env);
-    }
-
-    const buttons = matches.map(obj => ([{
       text: `🎵 ${obj.key}`,
       callback_data: `dl:${obj.key}`
     }]));
 
-    return this.sendMessage(chatId, `🔍 *Results for "${query}":*`, env, { inline_keyboard: buttons });
+    return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: "📂 *Available in R2:*",
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: buttons }
+    });
   },
 
+  // FEATURE: Search R2 keys for a match
+  async handleSearch(chatId, query, env) {
+    const list = await env.AUDIO.list();
+    const matches = list.objects.filter(obj => 
+      obj.key.toLowerCase().includes(query.toLowerCase())
+    ).slice(0, 10);
+
+    if (matches.length === 0) {
+      return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: `❌ No files found for "${query}"`
+      });
+    }
+
+    const buttons = matches.map(obj => ([{
+      text: `📥 Download ${obj.key}`,
+      callback_data: `dl:${obj.key}`
+    }]));
+
+    return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text: `🔍 *Search results for:* "${query}"`,
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: buttons }
+    });
+  },
+
+  // FEATURE: Stream file + Clean Metadata
   async sendR2File(chatId, fileName, env) {
     const object = await env.AUDIO.get(fileName);
-    if (!object) return this.sendMessage(chatId, "File missing.", env);
+    if (!object) return;
 
-    await this.sendChatAction(chatId, "upload_voice", env);
+    // Show "Sending audio..." in the top bar
+    await this.tg(env.TELEGRAM_BOT_TOKEN, "sendChatAction", { chat_id: chatId, action: "upload_voice" });
 
     const formData = new FormData();
     formData.append("chat_id", chatId);
     
-    // Feature: Clean up the title for the player
-    const cleanTitle = fileName.replace(/\.[^/.]+$/, "").replace(/_/g, " ");
-    formData.append("title", cleanTitle);
-    formData.append("performer", "ZedTopVibes"); 
+    // Clean up filename for the player (remove .mp3 and underscores)
+    const cleanName = fileName.replace(/\.[^/.]+$/, "").replace(/_/g, " ");
     
     const blob = await object.blob();
     formData.append("audio", blob, fileName);
+    formData.append("title", cleanName);
+    formData.append("performer", "ZedTopVibes");
 
     return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendAudio`, {
       method: "POST",
-      body: formData,
+      body: formData
     });
   },
 
-  // --- HELPERS ---
-
-  async sendMessage(chatId, text, env, replyMarkup = null) {
-    return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+  // Universal Telegram API Helper
+  async tg(token, method, payload) {
+    return fetch(`https://api.telegram.org/bot${token}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text,
-        parse_mode: "Markdown",
-        reply_markup: replyMarkup
-      }),
-    });
-  },
-
-  async answerCallback(callbackQueryId, text, env) {
-    return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callback_query_id: callbackQueryId, text: text }),
-    });
-  },
-
-  async sendChatAction(chatId, action, env) {
-    return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, action: action }),
+      body: JSON.stringify(payload)
     });
   }
 };
