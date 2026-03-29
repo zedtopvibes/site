@@ -1,8 +1,6 @@
 export default {
   async fetch(request, env) {
-    if (request.method !== 'POST') {
-      return new Response('ZedTopVibes R2 Bot Active');
-    }
+    if (request.method !== 'POST') return new Response('v2: Delivery Active');
 
     const update = await request.json();
     const message = update.message;
@@ -12,40 +10,47 @@ export default {
       const text = message.text;
       const token = env.TELEGRAM_BOT_TOKEN;
 
-      // --- Command: /list ---
+      // --- 1. COMMAND: /list ---
       if (text === '/list') {
-        // Fetch list of files from R2
         const list = await env.AUDIO.list({ limit: 10 });
-        const fileNames = list.objects.map(obj => obj.key).join('\n');
-        
-        const responseText = fileNames.length > 0 
-          ? `📂 *Files in R2:*\n${fileNames}` 
-          : "Your R2 bucket is empty.";
+        const names = list.objects.map(obj => `• ${obj.key}`).join('\n');
+        return this.sendText(chatId, token, names || "Bucket is empty.");
+      }
 
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      // --- 2. LOGIC: Is this a filename? ---
+      const object = await env.AUDIO.get(text);
+      if (object) {
+        // Show "Sending audio..." in Telegram
+        await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: responseText,
-            parse_mode: 'Markdown'
-          })
+          body: JSON.stringify({ chat_id: chatId, action: 'upload_voice' })
         });
-      } 
-      
-      // --- Default Response ---
-      else {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+
+        // Prepare File for Telegram
+        const formData = new FormData();
+        formData.append('chat_id', chatId);
+        formData.append('audio', await object.blob(), text);
+
+        return fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: "Bot is cool! Use /list to see files."
-          })
+          body: formData
         });
       }
+
+      // --- 3. DEFAULT RESPONSE ---
+      return this.sendText(chatId, token, "Send a filename from /list to download it!");
     }
 
     return new Response('OK');
+  },
+
+  // Helper function to keep code clean
+  async sendText(chatId, token, text) {
+    return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: text })
+    });
   }
 };
