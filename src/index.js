@@ -1,136 +1,122 @@
-export default {
-  // Your Admin ID
-  ADMIN_ID: 5672184873,
-
+Export default {
   async fetch(request, env) {
-    // Only handle POST (Telegram Webhooks)
     if (request.method !== "POST") return new Response("OK");
 
     try {
       const update = await request.json();
       const botToken = env.TELEGRAM_BOT_TOKEN;
 
-      // Extract message and callback data
-      const msg = update.message;
-      const cb = update.callback_query;
-      const chatId = msg?.chat?.id || cb?.message?.chat?.id;
-      const userId = msg?.from?.id || cb?.from?.id;
-
-      if (!chatId) return new Response("OK");
-
-      // 1. ADMIN UPLOAD FEATURE
-      // Only works if YOU send an audio file
-      if (msg?.audio && userId === this.ADMIN_ID) {
-        return await this.handleUpload(msg, env);
-      }
-
-      // 2. CALLBACK HANDLER (Buttons)
-      if (cb) {
-        const data = cb.data;
-        if (data.startsWith("dl:")) {
-          const fileName = data.split("dl:")[1];
-          await this.tg(botToken, "answerCallbackQuery", { callback_query_id: cb.id, text: "⏬ Fetching..." });
-          return await this.sendR2File(chatId, fileName, env);
-        }
-
-        if (data.startsWith("del:") && userId === this.ADMIN_ID) {
-          const fileName = data.split("del:")[1];
-          await env.AUDIO.delete(fileName);
-          await this.tg(botToken, "answerCallbackQuery", { callback_query_id: cb.id, text: "🗑️ Deleted" });
-          return this.tg(botToken, "sendMessage", { chat_id: chatId, text: `✅ Removed: ${fileName}` });
-        }
-      }
-
-      // 3. TEXT COMMANDS & SEARCH
-      if (msg?.text) {
-        const text = msg.text;
+      // Handle Message Text (Search & Commands)
+      if (update.message?.text) {
+        const { chat, text } = update.message;
+        const chatId = chat.id;
 
         if (text === "/start") {
           return this.tg(botToken, "sendMessage", {
             chat_id: chatId,
-            text: "🎵 *ZedTopVibes R2*\n\n• /list - Browse files\n• Send text to **Search**",
+            text: "🎵 *ZedTopVibes R2 Explorer*\n\n• Type /list to see all files\n• Send any text to **search** the bucket",
             parse_mode: "Markdown"
           });
         }
 
         if (text === "/list") {
-          return await this.handleList(chatId, env, userId);
+          return this.handleList(chatId, env);
         }
 
-        // Default: Search the bucket
-        return await this.handleSearch(chatId, text, env, userId);
+        // Default to Search
+        return this.handleSearch(chatId, text, env);
+      }
+
+      // Handle Button Clicks (Downloads)
+      if (update.callback_query) {
+        const { id, message, data } = update.callback_query;
+        if (data.startsWith("dl:")) {
+          const fileName = data.split("dl:")[1];
+          await this.tg(botToken, "answerCallbackQuery", { callback_query_id: id, text: "⏬ Fetching from R2..." });
+          return this.sendR2File(message.chat.id, fileName, env);
+        }
       }
 
     } catch (err) {
-      // If something breaks, try to tell the admin
       console.error(err);
     }
     return new Response("OK");
   },
 
-  // Helper to save audio to R2
-  async handleUpload(message, env) {
-    const fileId = message.audio.file_id;
-    const fileName = message.audio.file_name || `audio_${Date.now()}.mp3`;
-
-    const getFile = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`);
-    const fileRes = await getFile.json();
-    const download = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileRes.result.file_path}`);
-    
-    await env.AUDIO.put(fileName, await download.arrayBuffer());
-    return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", { chat_id: message.chat.id, text: `✅ Saved to R2: ${fileName}` });
-  },
-
-  async handleList(chatId, env, userId) {
+  // FEATURE: List all files in R2 with buttons
+  async handleList(chatId, env) {
     const list = await env.AUDIO.list({ limit: 20 });
-    if (list.objects.length === 0) return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", { chat_id: chatId, text: "R2 Bucket is empty." });
+    
+    if (list.objects.length === 0) {
+      return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", { chat_id: chatId, text: "The R2 bucket is currently empty." });
+    }
 
-    const buttons = list.objects.map(obj => {
-      let row = [{ text: `🎵 ${obj.key}`, callback_data: `dl:${obj.key}` }];
-      if (userId === this.ADMIN_ID) row.push({ text: "🗑️", callback_data: `del:${obj.key}` });
-      return row;
-    });
+    const buttons = list.objects.map(obj => ([{
+      text: `🎵 ${obj.key}`,
+      callback_data: `dl:${obj.key}`
+    }]));
 
     return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
-      text: "📂 *Bucket Files:*",
+      text: "📂 *Available in R2:*",
+      parse_mode: "Markdown",
       reply_markup: { inline_keyboard: buttons }
     });
   },
 
-  async handleSearch(chatId, query, env, userId) {
+  // FEATURE: Search R2 keys for a match
+  async handleSearch(chatId, query, env) {
     const list = await env.AUDIO.list();
-    const matches = list.objects.filter(obj => obj.key.toLowerCase().includes(query.toLowerCase())).slice(0, 10);
+    const matches = list.objects.filter(obj => 
+      obj.key.toLowerCase().includes(query.toLowerCase())
+    ).slice(0, 10);
 
-    if (matches.length === 0) return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", { chat_id: chatId, text: `❌ No files found for "${query}"` });
+    if (matches.length === 0) {
+      return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: `❌ No files found for "${query}"`
+      });
+    }
 
-    const buttons = matches.map(obj => {
-      let row = [{ text: `📥 ${obj.key}`, callback_data: `dl:${obj.key}` }];
-      if (userId === this.ADMIN_ID) row.push({ text: "🗑️", callback_data: `del:${obj.key}` });
-      return row;
-    });
+    const buttons = matches.map(obj => ([{
+      text: `📥 Download ${obj.key}`,
+      callback_data: `dl:${obj.key}`
+    }]));
 
     return this.tg(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
-      text: `🔍 Search results for: ${query}`,
+      text: `🔍 *Search results for:* "${query}"`,
+      parse_mode: "Markdown",
       reply_markup: { inline_keyboard: buttons }
     });
   },
 
+  // FEATURE: Stream file + Clean Metadata
   async sendR2File(chatId, fileName, env) {
     const object = await env.AUDIO.get(fileName);
     if (!object) return;
-    
+
+    // Show "Sending audio..." in the top bar
     await this.tg(env.TELEGRAM_BOT_TOKEN, "sendChatAction", { chat_id: chatId, action: "upload_voice" });
 
     const formData = new FormData();
     formData.append("chat_id", chatId);
-    formData.append("audio", await object.blob(), fileName);
+    
+    // Clean up filename for the player (remove .mp3 and underscores)
+    const cleanName = fileName.replace(/\.[^/.]+$/, "").replace(/_/g, " ");
+    
+    const blob = await object.blob();
+    formData.append("audio", blob, fileName);
+    formData.append("title", cleanName);
     formData.append("performer", "ZedTopVibes");
 
-    return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendAudio`, { method: "POST", body: formData });
+    return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendAudio`, {
+      method: "POST",
+      body: formData
+    });
   },
 
+  // Universal Telegram API Helper
   async tg(token, method, payload) {
     return fetch(`https://api.telegram.org/bot${token}/${method}`, {
       method: "POST",
