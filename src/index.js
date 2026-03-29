@@ -3,7 +3,7 @@ export default {
     // Ping endpoint (keeps worker warm)
     if (request.method === 'GET' && new URL(request.url).pathname === '/ping') {
       return new Response('OK');
-    }
+    } 
     
     if (request.method === 'POST') {
       const update = await request.json();
