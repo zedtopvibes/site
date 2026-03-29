@@ -12,7 +12,7 @@ export default {
       if (!message || !message.text) {
         return new Response('OK');
       }
-      
+       
       const chatId = message.chat.id;
       const userId = message.from.id;
       const username = message.from.username || message.from.first_name;
