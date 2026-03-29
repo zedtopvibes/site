@@ -1,6 +1,6 @@
 export default {
   async fetch(request, env) {
-    // Fast wake-up ping endpoint
+    // Ping endpoint (keeps worker warm)
     if (request.method === 'GET' && new URL(request.url).pathname === '/ping') {
       return new Response('OK');
     }
@@ -14,20 +14,38 @@ export default {
       }
       
       const chatId = message.chat.id;
+      const userId = message.from.id;
+      const username = message.from.username || message.from.first_name;
       const userMessage = message.text;
       const messageId = message.message_id;
       const token = env.TELEGRAM_BOT_TOKEN;
       
-      // ========== FAST COMMANDS (NO AI - INSTANT) ==========
+      // ========== CHECK IF USER EXISTS ==========
+      const userExists = await env.DB.prepare(
+        "SELECT 1 FROM bot_users WHERE user_id = ?"
+      ).bind(userId).first();
       
-      // /start - Wakes up worker and responds instantly
-      if (userMessage === '/start') {
+      // FIRST MESSAGE EVER (Instant, No AI)
+      if (!userExists) {
+        await env.DB.prepare(`
+          INSERT INTO bot_users (user_id, username, first_name, last_active)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        `).bind(userId, username, message.from.first_name).run();
+        
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chat_id: chatId,
-            text: "🎵 *Bot Activated!*\n\nI'm awake and ready!\n\nSend any message to chat with AI.\nUse /help for all commands.",
+            text: `🎵 *Welcome to ZEDTOP VIBES Bot!* 🇿🇲\n\n` +
+                  `I'm your Zambian music assistant.\n\n` +
+                  `🎤 *Try these:*\n` +
+                  `• Send any artist name (e.g., "Yo Maps")\n` +
+                  `• Send a song name (e.g., "Ndipe Mwe")\n` +
+                  `• /genre gospel — Browse by genre\n` +
+                  `• /trending — What's hot\n` +
+                  `• /help — All commands\n\n` +
+                  `Ready when you are! 🎵`,
             parse_mode: 'Markdown',
             reply_to_message_id: messageId
           })
@@ -35,57 +53,46 @@ export default {
         return new Response('OK');
       }
       
-      // /ping - Fast test
-      if (userMessage === '/ping') {
+      // Update last active
+      await env.DB.prepare(`
+        UPDATE bot_users SET last_active = CURRENT_TIMESTAMP 
+        WHERE user_id = ?
+      `).bind(userId).run();
+      
+      // ========== FAST COMMANDS (NO AI) ==========
+      
+      // /start
+      if (userMessage === '/start') {
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chat_id: chatId,
-            text: "🏓 Pong! Bot is alive.",
+            text: "🎵 *ZEDTOP VIBES Bot Ready!*\n\nSend an artist name, song name, or /help",
+            parse_mode: 'Markdown',
             reply_to_message_id: messageId
           })
         });
         return new Response('OK');
       }
       
-      // /help - All commands
+      // /help
       if (userMessage === '/help') {
-        const helpText = `🎵 *Music Bot Commands*
+        const helpText = `🎵 *ZEDTOP VIBES Bot Commands*
         
-*🎤 Music Tasks:*
-/recommend — Song recommendations
-/mood — Mood-based songs
-/discover [artist] — Find similar artists
-/playlist — Create a playlist
-/meaning [song] — Song meaning
-/trivia — Music trivia
-/throwback [year] — Music from that year
+*🎤 Music:*
+• Send any artist name (e.g., "Yo Maps")
+• Send any song name (e.g., "Ndipe Mwe")
+• /artist [name] — Artist details
+• /genre [genre] — Browse by genre
 
-*🎲 Fun AI Tasks:*
-/joke — Tell a joke
-/fact — Random fun fact
-/quote — Inspiring quote
-/riddle — Solve a riddle
-/poem [topic] — Write a poem
-/story — Story starter
-/compliment — Get a compliment
-/advice [topic] — Get advice
-/wyr — Would you rather
-/namegen [style] — Generate names
-/recipe — Quick recipe idea
+*📋 Commands:*
+/trending — Most downloaded songs
+/featured — Featured artists
+/legends — Zambian music legends
+/testdb — Test database connection
 
-*⚡ Quick Commands:*
-/start — Wake up bot
-/ping — Check status
-/search — Test search
-/random — Random number
-/task — Multi-step demo
-/countdown — Fun countdown
-/status — System status
-/weather — Weather simulation
-
-*Just type anything to chat with AI!*`;
+*✨ Just type naturally!*`;
         
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
@@ -100,461 +107,390 @@ export default {
         return new Response('OK');
       }
       
-      // ========== QUICK TEST COMMANDS (Auto-Delete) ==========
-      
-      // /search - Simulated search
-      if (userMessage === '/search') {
-        await sendAndDelete(chatId, "🔍 Searching library...", token, 2);
-        await new Promise(r => setTimeout(r, 1500));
-        await sendAndDelete(chatId, "✅ Found 3 matching songs!", token, 3);
+      // /ping
+      if (userMessage === '/ping') {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: "🏓 Pong! Bot is alive.",
+            reply_to_message_id: messageId
+          })
+        });
         return new Response('OK');
       }
       
-      // /random - Random number
-      if (userMessage === '/random') {
-        const num = Math.floor(Math.random() * 100) + 1;
-        await sendAndDelete(chatId, `🎲 Random number: ${num}`, token, 4);
-        return new Response('OK');
-      }
+      // ========== DATABASE TEST COMMAND ==========
       
-      // /task - Multi-step demo
-      if (userMessage === '/task') {
-        await sendAndDelete(chatId, "📊 Step 1/3: Analyzing...", token, 2);
-        await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "⚙️ Step 2/3: Processing...", token, 2);
-        await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "✅ Step 3/3: Complete!", token, 3);
-        return new Response('OK');
-      }
-      
-      // /status - System status
-      if (userMessage === '/status') {
-        await sendAndDelete(chatId, "📊 Checking system status...", token, 2);
-        await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "✅ Database: Connected\n✅ AI: Ready\n✅ Storage: Online", token, 5);
-        return new Response('OK');
-      }
-      
-      // /weather - Weather simulation
-      if (userMessage === '/weather') {
-        const conditions = ['☀️ Sunny', '🌧️ Rainy', '☁️ Cloudy', '🌤️ Partly Cloudy'];
-        const temp = Math.floor(Math.random() * 30) + 10;
-        const randomCondition = conditions[Math.floor(Math.random() * conditions.length)];
-        await sendAndDelete(chatId, `🌤️ Weather: ${randomCondition}\n🌡️ Temperature: ${temp}°C`, token, 5);
-        return new Response('OK');
-      }
-      
-      // /countdown - Fun countdown
-      if (userMessage === '/countdown') {
-        await sendAndDelete(chatId, "⏳ 3...", token, 1);
-        await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "⏳ 2...", token, 1);
-        await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "⏳ 1...", token, 1);
-        await new Promise(r => setTimeout(r, 1000));
-        await sendAndDelete(chatId, "🎉 Blast off!", token, 3);
-        return new Response('OK');
-      }
-      
-      // ========== RANDOM AI TASKS ==========
-      
-      // /joke - Tell a joke
-      if (userMessage === '/joke') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Tell a short, funny joke. Make it clean and family-friendly." },
-              { role: "user", content: "Tell me a joke" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /fact - Random fun fact
-      if (userMessage === '/fact') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Share an interesting, surprising fun fact. Keep it short and engaging." },
-              { role: "user", content: "Give me a fun fact" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /quote - Inspiring quote
-      if (userMessage === '/quote') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Give an inspiring quote with the author. Format: 'Quote' - Author" },
-              { role: "user", content: "Give me an inspiring quote" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /riddle - Give a riddle
-      if (userMessage === '/riddle') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Give a short riddle. Don't give the answer yet." },
-              { role: "user", content: "Give me a riddle" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /poem - Write a poem
-      if (userMessage.startsWith('/poem')) {
-        const topic = userMessage.replace('/poem', '').trim() || "love";
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: `Write a short, beautiful poem about ${topic}. 4-6 lines.` },
-              { role: "user", content: `Write a poem about ${topic}` }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /story - Story starter
-      if (userMessage === '/story') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Give an exciting opening sentence for a story. Make it intriguing." },
-              { role: "user", content: "Start a story" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /compliment - Give a compliment
-      if (userMessage === '/compliment') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Give a genuine, friendly compliment. Keep it short and positive." },
-              { role: "user", content: "Give me a compliment" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /advice - Get advice
-      if (userMessage.startsWith('/advice')) {
-        const topic = userMessage.replace('/advice', '').trim() || "life";
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: `Give brief, helpful advice about ${topic}. Keep it short and practical.` },
-              { role: "user", content: `Give me advice about ${topic}` }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /wyr - Would you rather
-      if (userMessage === '/wyr') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Give a fun 'Would you rather...' question with two interesting options." },
-              { role: "user", content: "Give me a would you rather question" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /namegen - Generate names
-      if (userMessage.startsWith('/namegen')) {
-        const style = userMessage.replace('/namegen', '').trim() || "fantasy";
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: `Generate 5 creative ${style} names. List them with numbers.` },
-              { role: "user", content: `Give me 5 ${style} names` }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /recipe - Quick recipe idea
-      if (userMessage === '/recipe') {
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Suggest a quick, easy recipe idea with ingredients and simple steps." },
-              { role: "user", content: "Give me a quick recipe idea" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // ========== MUSIC AI TASKS (Multi-Step) ==========
-      
-      // /recommend - Song recommendations
-      if (userMessage === '/recommend') {
-        await sendAndDelete(chatId, "🔍 Step 1/4: Analyzing your music taste...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🎵 Step 2/4: Scanning library for similar songs...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "📊 Step 3/4: Checking popularity trends...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "✨ Step 4/4: Curating your playlist...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
+      if (userMessage === '/testdb') {
+        await sendAction(chatId, 'typing', token);
         
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Recommend 3 popular songs based on current trends. Format nicely with emojis." },
-              { role: "user", content: "Recommend me some songs" }
-            ]
+        try {
+          // Test 1: Read from D1
+          const artists = await env.DB.prepare(`
+            SELECT name, genre, total_downloads, total_tracks
+            FROM artists 
+            WHERE status = 'active'
+            ORDER BY total_downloads DESC
+            LIMIT 5
+          `).all();
+          
+          let response = "🎵 *Top Artists in Database*\n\n";
+          
+          if (artists.results.length === 0) {
+            response = "❌ No artists found in database.\n";
+          } else {
+            artists.results.forEach((a, i) => {
+              response += `${i+1}. *${a.name}*\n`;
+              response += `   🏷️ ${a.genre || 'No genre'} | ⭐ ${a.total_downloads || 0} downloads\n`;
+            });
           }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /mood - Mood-based songs
-      if (userMessage === '/mood') {
-        await sendAndDelete(chatId, "🎭 Step 1/4: Detecting your mood...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🔊 Step 2/4: Analyzing tempo and energy...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🎯 Step 3/4: Matching with songs in library...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🎵 Step 4/4: Selecting perfect match...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Suggest songs based on mood: upbeat, chill, or emotional. Pick one mood and recommend 2 songs." },
-              { role: "user", content: "What songs match my mood?" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /discover - Find similar artists
-      if (userMessage.startsWith('/discover')) {
-        const artist = userMessage.replace('/discover', '').trim() || "popular artist";
-        
-        await sendAndDelete(chatId, "🔍 Step 1/4: Finding similar artists...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "📀 Step 2/4: Analyzing musical style...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🎤 Step 3/4: Checking fan favorites...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "✨ Step 4/4: Discovering hidden gems...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: `Recommend 3 artists similar to ${artist}. Give brief why they're similar.` },
-              { role: "user", content: `Find artists like ${artist}` }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /playlist - Create playlist
-      if (userMessage === '/playlist') {
-        await sendAndDelete(chatId, "📝 Step 1/4: Understanding your vibe...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🎵 Step 2/4: Browsing top tracks...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🔄 Step 3/4: Mixing genres for variety...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "📀 Step 4/4: Creating your perfect playlist...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Create a 5-song playlist with variety. Include song titles and artists. Format nicely." },
-              { role: "user", content: "Create a playlist for me" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /meaning - Song meaning
-      if (userMessage.startsWith('/meaning')) {
-        const song = userMessage.replace('/meaning', '').trim() || "a popular song";
-        
-        await sendAndDelete(chatId, "📖 Step 1/4: Loading lyrics...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🔍 Step 2/4: Analyzing metaphors...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🎭 Step 3/4: Understanding artist's intent...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "💡 Step 4/4: Interpreting the meaning...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: `Explain the meaning behind "${song}" briefly. What's the song about?` },
-              { role: "user", content: `What does ${song} mean?` }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /trivia - Music trivia
-      if (userMessage === '/trivia') {
-        await sendAndDelete(chatId, "🎮 Step 1/4: Loading music database...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "📊 Step 2/4: Selecting random artist...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "❓ Step 3/4: Generating question...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "✨ Step 4/4: Ready!", token, 2);
-        await new Promise(r => setTimeout(r, 500));
-        
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: "Give a fun music trivia question with 4 options. Format: Question\nA) ...\nB) ...\nC) ...\nD) ..." },
-              { role: "user", content: "Give me music trivia" }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // /throwback - Music from specific year
-      if (userMessage.startsWith('/throwback')) {
-        const year = userMessage.replace('/throwback', '').trim() || "2000";
-        
-        await sendAndDelete(chatId, `📅 Step 1/4: Loading ${year} music charts...`, token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🎤 Step 2/4: Finding top artists...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "🏆 Step 3/4: Identifying hit songs...", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        await sendAndDelete(chatId, "⏰ Step 4/4: Time travel complete!", token, 2);
-        await new Promise(r => setTimeout(r, 800));
-        
-        const thinkingId = await sendThinking(chatId, token, messageId);
-        const aiResponse = await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct",
-          {
-            messages: [
-              { role: "system", content: `List 3 popular songs from ${year}. Include artists. Add a fun fact about music in ${year}.` },
-              { role: "user", content: `What were popular songs in ${year}?` }
-            ]
-          }
-        );
-        await editThinking(chatId, thinkingId, aiResponse.response, token);
-        return new Response('OK');
-      }
-      
-      // ========== DEFAULT: AI CONVERSATION ==========
-      
-      // Send "thinking" message instantly
-      const thinkingId = await sendThinking(chatId, token, messageId);
-      
-      // Get AI response
-      const aiResponse = await env.AI.run(
-        "@cf/meta/llama-3.1-8b-instruct",
-        {
-          messages: [
-            {
-              role: "system",
-              content: "You are a helpful music assistant. Keep responses short and friendly. Use emojis occasionally."
-            },
-            {
-              role: "user",
-              content: userMessage
-            }
-          ]
+          
+          // Test 2: Get total songs count
+          const songsCount = await env.DB.prepare(`
+            SELECT COUNT(*) as count FROM songs WHERE status = 'active'
+          `).first();
+          
+          response += `\n📀 *Total songs:* ${songsCount?.count || 0}\n`;
+          
+          // Test 3: List files in R2
+          const files = await env.AUDIO.list();
+          response += `📁 *R2 Storage:* ${files.objects?.length || 0} files`;
+          
+          await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
+          
+        } catch (error) {
+          await sendMessage(chatId, `❌ Error: ${error.message}`, token);
         }
-      );
+        return new Response('OK');
+      }
       
-      // Edit thinking message with final response
-      await editThinking(chatId, thinkingId, aiResponse.response, token);
+      // ========== ARTIST SEARCH ==========
+      
+      if (userMessage.startsWith('/artist')) {
+        const artistName = userMessage.replace('/artist', '').trim();
+        if (!artistName) {
+          await sendMessage(chatId, "Please provide an artist name. Example: /artist Yo Maps", token);
+          return new Response('OK');
+        }
+        
+        await sendAction(chatId, 'typing', token);
+        
+        const artist = await env.DB.prepare(`
+          SELECT id, name, bio, country, genre, total_tracks, total_downloads, views, image_url
+          FROM artists 
+          WHERE name LIKE ? AND status = 'active'
+        `).bind(`%${artistName}%`).first();
+        
+        if (!artist) {
+          await sendMessage(chatId, `❌ Artist "${artistName}" not found in library.`, token);
+          return new Response('OK');
+        }
+        
+        // Get artist's top songs
+        const songs = await env.DB.prepare(`
+          SELECT s.id, s.title, s.duration, s.download_count
+          FROM songs s
+          WHERE s.artist_id = ?
+          ORDER BY s.download_count DESC
+          LIMIT 5
+        `).bind(artist.id).all();
+        
+        let response = `🎤 *${artist.name}*\n\n`;
+        if (artist.bio) response += `${artist.bio.substring(0, 200)}...\n\n`;
+        response += `📊 *Stats:*\n`;
+        response += `🇿🇲 ${artist.country || 'Zambia'}\n`;
+        response += `🎸 ${artist.genre || 'Various'}\n`;
+        response += `🎵 ${artist.total_tracks || 0} tracks\n`;
+        response += `⭐ ${artist.total_downloads || 0} total downloads\n\n`;
+        
+        if (songs.results.length > 0) {
+          response += `*Top Tracks:*\n`;
+          songs.results.forEach((song, i) => {
+            response += `${i+1}. *${song.title}* — ${song.download_count || 0} downloads\n`;
+          });
+          response += `\nSend /song [title] to download.`;
+        } else {
+          response += `No tracks found for this artist yet.`;
+        }
+        
+        await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
+        return new Response('OK');
+      }
+      
+      // ========== GENRE SEARCH ==========
+      
+      if (userMessage.startsWith('/genre')) {
+        const genre = userMessage.replace('/genre', '').trim().toLowerCase();
+        if (!genre) {
+          await sendMessage(chatId, "Please provide a genre. Example: /genre Gospel", token);
+          return new Response('OK');
+        }
+        
+        await sendAction(chatId, 'typing', token);
+        
+        const artists = await env.DB.prepare(`
+          SELECT name, genre, total_downloads, total_tracks
+          FROM artists 
+          WHERE LOWER(genre) LIKE ? AND status = 'active'
+          ORDER BY total_downloads DESC
+          LIMIT 10
+        `).bind(`%${genre}%`).all();
+        
+        if (artists.results.length === 0) {
+          await sendMessage(chatId, `❌ No artists found in genre "${genre}".`, token);
+          return new Response('OK');
+        }
+        
+        let response = `🎵 *${genre.toUpperCase()} Artists*\n\n`;
+        artists.results.forEach((a, i) => {
+          response += `${i+1}. *${a.name}* — ${a.total_tracks || 0} tracks, ${a.total_downloads || 0} downloads\n`;
+        });
+        response += `\nUse /artist [name] to see more.`;
+        
+        await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
+        return new Response('OK');
+      }
+      
+      // ========== TRENDING / POPULAR ==========
+      
+      if (userMessage === '/trending') {
+        await sendAction(chatId, 'typing', token);
+        
+        const trending = await env.DB.prepare(`
+          SELECT s.id, s.title, a.name as artist, s.download_count
+          FROM songs s
+          JOIN artists a ON s.artist_id = a.id
+          WHERE s.status = 'active'
+          ORDER BY s.download_count DESC
+          LIMIT 10
+        `).all();
+        
+        if (trending.results.length === 0) {
+          await sendMessage(chatId, "No trending songs found.", token);
+          return new Response('OK');
+        }
+        
+        let response = "🔥 *Trending Songs*\n\n";
+        trending.results.forEach((song, i) => {
+          response += `${i+1}. *${song.title}* — ${song.artist}\n`;
+          response += `   ⭐ ${song.download_count || 0} downloads\n`;
+        });
+        response += `\nSend /song [title] to download.`;
+        
+        await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
+        return new Response('OK');
+      }
+      
+      // ========== FEATURED ARTISTS ==========
+      
+      if (userMessage === '/featured') {
+        await sendAction(chatId, 'typing', token);
+        
+        const featured = await env.DB.prepare(`
+          SELECT name, genre, total_downloads, image_url
+          FROM artists 
+          WHERE is_featured = 1 AND status = 'active'
+          ORDER BY total_downloads DESC
+          LIMIT 10
+        `).all();
+        
+        if (featured.results.length === 0) {
+          await sendMessage(chatId, "No featured artists found.", token);
+          return new Response('OK');
+        }
+        
+        let response = "⭐ *Featured Artists*\n\n";
+        featured.results.forEach((a, i) => {
+          response += `${i+1}. *${a.name}* — ${a.genre || 'Various'}\n`;
+          response += `   ⭐ ${a.total_downloads || 0} downloads\n`;
+        });
+        response += `\nUse /artist [name] to see more.`;
+        
+        await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
+        return new Response('OK');
+      }
+      
+      // ========== ZAMBIAN LEGENDS ==========
+      
+      if (userMessage === '/legends') {
+        await sendAction(chatId, 'typing', token);
+        
+        const legends = await env.DB.prepare(`
+          SELECT name, genre, total_downloads, bio
+          FROM artists 
+          WHERE is_zambian_legend = 1 AND status = 'active'
+          ORDER BY total_downloads DESC
+        `).all();
+        
+        if (legends.results.length === 0) {
+          await sendMessage(chatId, "No legends found.", token);
+          return new Response('OK');
+        }
+        
+        let response = "👑 *Zambian Music Legends*\n\n";
+        legends.results.forEach((a, i) => {
+          response += `${i+1}. *${a.name}* — ${a.genre || 'Various'}\n`;
+          response += `   ⭐ ${a.total_downloads || 0} downloads\n`;
+        });
+        response += `\nUse /artist [name] to learn more.`;
+        
+        await sendMessage(chatId, response, token, { parse_mode: 'Markdown' });
+        return new Response('OK');
+      }
+      
+      // ========== NATURAL LANGUAGE SEARCH (AI) ==========
+      
+      // Check if it's a music-related query
+      const isMusicQuery = !userMessage.startsWith('/');
+      
+      if (isMusicQuery) {
+        await sendAction(chatId, 'typing', token);
+        
+        // Send thinking message
+        const thinking = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: "🔍 Searching...",
+            reply_to_message_id: messageId
+          })
+        });
+        const thinkingData = await thinking.json();
+        const thinkingMsgId = thinkingData.result.message_id;
+        
+        // Use AI to understand the query
+        const aiResponse = await env.AI.run(
+          "@cf/meta/llama-3.1-8b-instruct",
+          {
+            messages: [
+              { 
+                role: "system", 
+                content: `Extract artist or song name from the user's message. Return JSON only.
+                Example: {"type":"artist","name":"Yo Maps"}
+                Example: {"type":"song","name":"Ndipe Mwe","artist":"Pompi"}
+                If unclear, return {"type":"unknown"}` 
+              },
+              { role: "user", content: userMessage }
+            ]
+          }
+        );
+        
+        let parsed;
+        try {
+          parsed = JSON.parse(aiResponse.response);
+        } catch(e) {
+          parsed = { type: "unknown" };
+        }
+        
+        let resultText = "";
+        
+        if (parsed.type === "artist" && parsed.name) {
+          // Search for artist
+          const artist = await env.DB.prepare(`
+            SELECT name, genre, total_tracks, total_downloads
+            FROM artists 
+            WHERE name LIKE ? AND status = 'active'
+          `).bind(`%${parsed.name}%`).first();
+          
+          if (artist) {
+            resultText = `🎤 *${artist.name}*\n\n`;
+            resultText += `🎸 ${artist.genre || 'Various'}\n`;
+            resultText += `🎵 ${artist.total_tracks || 0} tracks\n`;
+            resultText += `⭐ ${artist.total_downloads || 0} downloads\n\n`;
+            resultText += `Use /artist ${artist.name} for more details.`;
+          } else {
+            resultText = `❌ Artist "${parsed.name}" not found in library.`;
+          }
+          
+        } else if (parsed.type === "song" && parsed.name) {
+          // Search for song
+          const song = await env.DB.prepare(`
+            SELECT s.title, a.name as artist, s.download_count
+            FROM songs s
+            JOIN artists a ON s.artist_id = a.id
+            WHERE s.title LIKE ?
+            ORDER BY s.download_count DESC
+            LIMIT 1
+          `).bind(`%${parsed.name}%`).first();
+          
+          if (song) {
+            resultText = `🎵 *${song.title}* — ${song.artist}\n`;
+            resultText += `⭐ ${song.download_count || 0} downloads\n\n`;
+            resultText += `Check our website to download!`;
+          } else {
+            resultText = `❌ Song "${parsed.name}" not found in library.`;
+          }
+          
+        } else {
+          resultText = `🎵 *ZEDTOP VIBES*\n\n` +
+                      `Try:\n` +
+                      `• Send an artist name (e.g., "Yo Maps")\n` +
+                      `• /artist [name]\n` +
+                      `• /genre [genre]\n` +
+                      `• /trending\n` +
+                      `• /featured`;
+        }
+        
+        // Edit thinking message with result
+        await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: thinkingMsgId,
+            text: resultText,
+            parse_mode: 'Markdown'
+          })
+        });
+        
+        return new Response('OK');
+      }
+      
+      // ========== DEFAULT: UNKNOWN COMMAND ==========
+      
+      await sendMessage(chatId, 
+        `❌ Unknown command. Try /help to see available commands.`, 
+        token
+      );
       
       return new Response('OK');
     }
     
-    return new Response('AI Bot is running! Send /start to wake me up.');
+    return new Response('ZEDTOP VIBES Bot is running! Send /start to begin.');
   }
 };
 
 // ========== HELPER FUNCTIONS ==========
 
-// Send temporary auto-delete message
+async function sendAction(chatId, action, token) {
+  await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, action: action })
+  });
+}
+
+async function sendMessage(chatId, text, token, options = {}) {
+  const payload = {
+    chat_id: chatId,
+    text: text,
+    parse_mode: options.parse_mode || 'Markdown'
+  };
+  
+  if (options.reply_to_message_id) {
+    payload.reply_to_message_id = options.reply_to_message_id;
+  }
+  
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+}
+
 async function sendAndDelete(chatId, text, token, seconds = 3) {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
@@ -581,33 +517,4 @@ async function sendAndDelete(chatId, text, token, seconds = 3) {
       }).catch(e => console.log('Delete failed:', e));
     }, seconds * 1000);
   }
-}
-
-// Send thinking message and return message ID
-async function sendThinking(chatId, token, replyToId) {
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: "🤔 Thinking...",
-      reply_to_message_id: replyToId
-    })
-  });
-  const data = await response.json();
-  return data.result.message_id;
-}
-
-// Edit thinking message with final response
-async function editThinking(chatId, messageId, text, token) {
-  await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      message_id: messageId,
-      text: text,
-      parse_mode: 'Markdown'
-    })
-  });
 }
