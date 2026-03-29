@@ -1,73 +1,83 @@
 export default {
   async fetch(request, env) {
-    if (request.method !== 'POST') return new Response('v3: Buttons Active');
+    if (request.method !== 'POST') return new Response('v4: Search Active');
 
     const update = await request.json();
     const token = env.TELEGRAM_BOT_TOKEN;
 
-    // --- 1. HANDLE BUTTON CLICKS ---
+    // --- 1. HANDLE BUTTON CLICKS (CALLBACKS) ---
     if (update.callback_query) {
       const chatId = update.callback_query.message.chat.id;
-      const fileName = update.callback_query.data; // The filename is stored in the button data
-      const callbackId = update.callback_query.id;
-
-      // Tell Telegram we received the click (stops the loading spinner on the button)
+      const fileName = update.callback_query.data;
+      
       await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ callback_query_id: callbackId, text: "Fetching file..." })
+        body: JSON.stringify({ callback_query_id: update.callback_query.id, text: "🎶 Sending audio..." })
       });
 
       return this.sendR2File(chatId, fileName, env);
     }
 
-    // --- 2. HANDLE TEXT MESSAGES ---
+    // --- 2. HANDLE MESSAGES (COMMANDS & SEARCH) ---
     if (update.message?.text) {
       const chatId = update.message.chat.id;
       const text = update.message.text;
 
-      if (text === '/list') {
-        const list = await env.AUDIO.list({ limit: 10 });
-        
-        // Map filenames to Telegram Buttons
-        const buttons = list.objects.map(obj => ([{
-          text: `🎵 ${obj.key}`,
-          callback_data: obj.key // This is what gets sent back when clicked
-        }]));
-
-        return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: "📂 *Select a file to download:*",
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: buttons }
-          })
-        });
+      if (text === '/start') {
+        return this.sendText(chatId, token, "Welcome! Send me a song name to search, or use /list.");
       }
 
-      // Default Response
-      return this.sendText(chatId, token, "Use /list to see files with buttons!");
+      if (text === '/list') {
+        const list = await env.AUDIO.list({ limit: 15 });
+        return this.showResults(chatId, token, list.objects, "📂 *All Files:*");
+      }
+
+      // --- THE SEARCH FEATURE ---
+      // We list ALL files in the bucket and filter them by the user's text
+      const allFiles = await env.AUDIO.list();
+      const matches = allFiles.objects.filter(obj => 
+        obj.key.toLowerCase().includes(text.toLowerCase())
+      ).slice(0, 10); // Limit to top 10 matches to keep the UI clean
+
+      if (matches.length > 0) {
+        return this.showResults(chatId, token, matches, `🔍 *Results for "${text}":*`);
+      } else {
+        return this.sendText(chatId, token, `❌ No files found matching "${text}".`);
+      }
     }
 
     return new Response('OK');
   },
 
-  // Helper to fetch from R2 and send as Audio
-  async sendR2File(chatId, fileName, env) {
-    const token = env.TELEGRAM_BOT_TOKEN;
-    const object = await env.AUDIO.get(fileName);
+  // Helper to generate a list of buttons
+  async showResults(chatId, token, fileObjects, title) {
+    const buttons = fileObjects.map(obj => ([{
+      text: `🎵 ${obj.key}`,
+      callback_data: obj.key
+    }]));
 
-    if (!object) {
-      return this.sendText(chatId, token, "File not found in R2.");
-    }
+    return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: title,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: buttons }
+      })
+    });
+  },
+
+  async sendR2File(chatId, fileName, env) {
+    const object = await env.AUDIO.get(fileName);
+    if (!object) return;
 
     const formData = new FormData();
     formData.append('chat_id', chatId);
     formData.append('audio', await object.blob(), fileName);
 
-    return fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
+    return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendAudio`, {
       method: 'POST',
       body: formData
     });
