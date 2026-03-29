@@ -16,7 +16,7 @@ export default {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
-          text: "Bot is alive! Send /ping for test."
+          text: "Bot is cool! Send /ping for test."
         })
       });
       
