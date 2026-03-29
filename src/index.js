@@ -2,123 +2,93 @@ export default {
   ADMIN_ID: 5672184873,
 
   async fetch(request, env) {
-    if (request.method !== 'POST') return new Response('v9: Monitoring Active');
-
+    if (request.method !== 'POST') return new Response('v10: D1 Hub Active');
     const update = await request.json();
     const token = env.TELEGRAM_BOT_TOKEN;
-    const msg = update.message;
-    const userId = msg?.from?.id || update.callback_query?.from?.id;
 
-    // --- 1. ADMIN UPLOAD & CALLBACKS (Same as before) ---
-    if (msg?.audio && userId === this.ADMIN_ID) return this.handleUpload(msg, env);
-    if (update.callback_query) return this.handleCallback(update.callback_query, env);
+    // --- 1. CALLBACK HANDLER (The Navigation Engine) ---
+    if (update.callback_query) {
+      const cb = update.callback_query;
+      const data = cb.data;
+      const chatId = cb.message.chat.id;
+
+      // Clicked an Artist -> Show their Albums
+      if (data.startsWith('art:')) {
+        const artistId = data.split(':')[1];
+        const { results } = await env.DB.prepare("SELECT id, title FROM albums WHERE artist_id = ?").bind(artistId).all();
+        const buttons = results.map(alb => ([{ text: `💿 ${alb.title}`, callback_data: `alb:${alb.id}` }]));
+        return this.editMenu(chatId, cb.message.message_id, token, "Select an Album:", buttons);
+      }
+
+      // Clicked an Album -> Show its Tracks
+      if (data.startsWith('alb:')) {
+        const albumId = data.split(':')[1];
+        const { results } = await env.DB.prepare(`
+          SELECT t.title, t.r2_key FROM tracks t 
+          JOIN album_tracks at ON t.id = at.track_id 
+          WHERE at.album_id = ?
+        `).bind(albumId).all();
+        const buttons = results.map(t => ([{ text: `🎵 ${t.title}`, callback_data: `play:${t.r2_key}` }]));
+        return this.editMenu(chatId, cb.message.message_id, token, "Select a Track:", buttons);
+      }
+
+      // Clicked a Track -> Send Audio from R2
+      if (data.startsWith('play:')) {
+        const r2Key = data.split(':')[1];
+        await this.answerCb(token, cb.id, "🎶 Loading Audio...");
+        return this.sendR2File(chatId, r2Key, env);
+      }
+    }
 
     // --- 2. TEXT HANDLER ---
-    if (msg?.text) {
-      const chatId = msg.chat.id;
-      const text = msg.text.trim();
+    if (update.message?.text) {
+      const chatId = update.message.chat.id;
+      const text = update.message.text.toLowerCase();
 
-      // Commands
-      if (text.toLowerCase() === '/start') return this.sendText(chatId, token, "🎵 *ZedTopVibes AI*\nSend a song name to search.");
-      if (text.toLowerCase() === '/list') {
-        const list = await env.AUDIO.list({ limit: 15 });
-        return this.showResults(chatId, token, list.objects, "📂 *Bucket:*", userId);
+      if (text === '/menu') {
+        const { results } = await env.DB.prepare("SELECT id, name FROM artists WHERE status != 'deleted' LIMIT 15").all();
+        const buttons = results.map(a => ([{ text: `👤 ${a.name}`, callback_data: `art:${a.id}` }]));
+        return this.sendMenu(chatId, token, "🌟 *Main Menu*\nBrowse by Artist:", buttons);
       }
-
-      // --- AI SEARCH WITH NEURON TRACKING ---
-      await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, action: 'typing' })
-      });
-
-      // We capture the AI result AND the usage metadata
-      const aiData = await this.getAiSearchWithUsage(msg.text, env);
-      const cleanQuery = aiData.query;
       
-      const allFiles = await env.AUDIO.list();
-      const matches = allFiles.objects.filter(obj => 
-        obj.key.toLowerCase().includes(cleanQuery.toLowerCase())
-      ).slice(0, 10);
-
-      let title = `🔍 *Results for:* "${cleanQuery}"`;
-      
-      // ADMIN ONLY: Append the Neuron Usage Report
-      if (userId === this.ADMIN_ID) {
-        title += `\n\n⚡ *Admin Stats:*\nUsed: \`${aiData.neurons}\` Neurons\nModel: \`Llama-3.1-8B\``;
-      }
-
-      if (matches.length > 0) {
-        return this.showResults(chatId, token, matches, title, userId);
-      }
-      return this.sendText(chatId, token, `❌ No files for "${cleanQuery}".\n\n${userId === this.ADMIN_ID ? `⚡ _AI used ${aiData.neurons} neurons_` : ''}`);
+      // AI Search could now query D1 instead of R2 for faster results!
     }
 
     return new Response('OK');
   },
 
-  // AI Function that calculates cost
-  async getAiSearchWithUsage(userInput, env) {
-    try {
-      const result = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-        messages: [
-          { role: 'system', content: 'Extract only music keywords (artist/song). No chat.' },
-          { role: 'user', content: userInput }
-        ]
-      });
-
-      // Llama 3.1 8B pricing approx: Input 25.6k / 1M, Output 75.1k / 1M
-      // We estimate based on average token lengths for short queries
-      const inputTokens = userInput.length / 4; 
-      const outputTokens = result.response.length / 4;
-      const estimatedNeurons = Math.ceil((inputTokens * 0.025) + (outputTokens * 0.075));
-
-      return {
-        query: result.response.trim(),
-        neurons: estimatedNeurons || 1 // Minimum 1 neuron
-      };
-    } catch (e) {
-      return { query: userInput, neurons: 0 };
-    }
-  },
-
-  // (Helper functions handleUpload, showResults, sendR2File, etc. remain the same)
-  // ... [Existing helper functions from previous code]
-  async showResults(chatId, token, fileObjects, title, userId) {
-    const buttons = fileObjects.map(obj => {
-      let row = [{ text: `🎵 ${obj.key}`, callback_data: obj.key }];
-      if (userId === this.ADMIN_ID) row.push({ text: "🗑️", callback_data: `del:${obj.key}` });
-      return row;
-    });
+  // Helper to send a new menu
+  async sendMenu(chatId, token, text, buttons) {
     return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: title, parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } })
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } })
     });
   },
 
-  async sendR2File(chatId, fileName, env) {
-    const object = await env.AUDIO.get(fileName);
+  // Helper to edit existing menu (keeps the chat clean)
+  async editMenu(chatId, messageId, token, text, buttons) {
+    return fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, reply_markup: { inline_keyboard: buttons } })
+    });
+  },
+
+  async sendR2File(chatId, r2Key, env) {
+    const object = await env.AUDIO.get(r2Key);
+    if (!object) return;
     const formData = new FormData();
     formData.append('chat_id', chatId);
-    formData.append('audio', await object.blob(), fileName);
+    formData.append('audio', await object.blob(), r2Key);
     return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendAudio`, { method: 'POST', body: formData });
   },
 
-  async sendText(chatId, token, text) {
-    return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  async answerCb(token, id, text) {
+    return fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' })
+      body: JSON.stringify({ callback_query_id: id, text })
     });
-  },
-
-  async handleCallback(cb, env) {
-    const token = env.TELEGRAM_BOT_TOKEN;
-    if (cb.data.startsWith('del:') && cb.from.id === this.ADMIN_ID) {
-      await env.AUDIO.delete(cb.data.replace('del:', ''));
-      return this.sendText(cb.message.chat.id, token, "✅ Deleted.");
-    }
-    return this.sendR2File(cb.message.chat.id, cb.data, env);
   }
 };
