@@ -5,7 +5,7 @@ export default {
     const update = await request.json();
     const msg = update.message;
     if (!msg) return new Response("OK");
-
+ 
     const ADMIN_ID = 5672184873;
     const CHANNEL_ID = -1003779504495;
     const BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
