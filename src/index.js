@@ -1,142 +1,199 @@
+// src/index.js
+
 export default {
-  ADMIN_ID: 5672184873,
-
-  async fetch(request, env) {
-    if (request.method !== 'POST') return new Response('v11: Music Hub Active');
-    const update = await request.json();
-    const token = env.TELEGRAM_BOT_TOKEN;
-
-    // --- 1. CALLBACK HANDLER (The Navigation Engine) ---
-    if (update.callback_query) {
-      const cb = update.callback_query;
-      const [action, id] = cb.data.split(':');
-      const chatId = cb.message.chat.id;
-      const msgId = cb.message.message_id;
-
-      // Navigate: Artist -> Albums
-      if (action === 'art') {
-        const { results } = await env.DB.prepare("SELECT id, title FROM albums WHERE artist_id = ? AND status='draft'").bind(id).all(); // Change status to 'public' if ready
-        const buttons = results.map(alb => ([{ text: `💿 ${alb.title}`, callback_data: `alb:${alb.id}` }]));
-        buttons.push([{ text: "⬅️ Back to Artists", callback_data: "menu:top" }]);
-        return this.editMenu(chatId, msgId, token, "📂 *Select an Album/EP:*", buttons);
-      }
-
-      // Navigate: Album -> Tracks
-      if (action === 'alb') {
-        const { results } = await env.DB.prepare(`
-          SELECT t.title, t.r2_key FROM tracks t 
-          JOIN album_tracks at ON t.id = at.track_id 
-          WHERE at.album_id = ?
-        `).bind(id).all();
-        const buttons = results.map(t => ([{ text: `🎵 ${t.title}`, callback_data: `play:${t.r2_key}` }]));
-        buttons.push([{ text: "⬅️ Back to Albums", callback_data: "menu:top" }]); // Simplification
-        return this.editMenu(chatId, msgId, token, "🎶 *Select a Track:*", buttons);
-      }
-
-      // Back to Main Menu
-      if (action === 'menu') {
-        return this.sendMainMenu(chatId, token, true, msgId, env);
-      }
-
-      // Final Step: Play from R2
-      if (action === 'play') {
-        await this.answerCb(token, cb.id, "🎶 Loading from R2...");
-        return this.sendR2File(chatId, id, env); // 'id' here is the r2_key
-      }
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    
+    // Handle webhook setup
+    if (url.pathname === '/webhook/setup') {
+      return await setupWebhook(request, env);
     }
-
-    // --- 2. TEXT HANDLER (AI Search) ---
-    if (update.message?.text) {
-      const chatId = update.message.chat.id;
-      const text = update.message.text;
-
-      if (text === '/start' || text === '/menu') {
-        return this.sendMainMenu(chatId, token, false, null, env);
-      }
-
-      // SMART SEARCH: AI decides what to query
-      await this.sendChatAction(chatId, token, 'typing');
-      const searchData = await this.getSmartSearch(text, env);
-      
-      // Query D1 based on AI's extraction
-      const { results } = await env.DB.prepare(
-        "SELECT id, title as name, 'track' as type FROM tracks WHERE title LIKE ? LIMIT 5"
-      ).bind(`%${searchData.query}%`).all();
-
-      if (results.length > 0) {
-        const buttons = results.map(r => ([{ text: `🎵 ${r.name}`, callback_data: `play:${r.id}` }]));
-        return this.sendMenu(chatId, token, `🔎 *Search Results for "${searchData.query}":*`, buttons);
-      }
-      return this.sendText(chatId, token, "❌ No matches found in the library.");
+    
+    // Handle Telegram webhook updates
+    if (url.pathname === '/webhook') {
+      return await handleTelegramUpdate(request, env);
     }
-
-    return new Response('OK');
-  },
-
-  // --- HELPERS ---
-
-  async sendMainMenu(chatId, token, isEdit, msgId, env) {
-    const { results } = await env.DB.prepare("SELECT id, name FROM artists LIMIT 10").all();
-    const buttons = results.map(a => ([{ text: `👤 ${a.name}`, callback_data: `art:${a.id}` }]));
-    const text = "🌟 *ZedTopVibes Hub*\nChoose an artist to explore their music:";
-    return isEdit 
-      ? this.editMenu(chatId, msgId, token, text, buttons)
-      : this.sendMenu(chatId, token, text, buttons);
-  },
-
-  async getSmartSearch(input, env) {
-    const response = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-      messages: [{ role: 'system', content: 'Extract music keywords only. One or two words.' }, { role: 'user', content: input }]
-    });
-    return { query: response.response.trim() };
-  },
-
-  async sendR2File(chatId, r2Key, env) {
-    const object = await env.AUDIO.get(r2Key);
-    if (!object) return;
-    const formData = new FormData();
-    formData.append('chat_id', chatId);
-    formData.append('audio', await object.blob(), r2Key);
-    return fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendAudio`, { method: 'POST', body: formData });
-  },
-
-  async sendMenu(chatId, token, text, buttons) {
-    return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } })
-    });
-  },
-
-  async editMenu(chatId, msgId, token, text, buttons) {
-    return fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message_id: msgId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } })
-    });
-  },
-
-  async sendChatAction(chatId, token, action) {
-    return fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, action })
-    });
-  },
-
-  async sendText(chatId, token, text) {
-    return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
-    });
-  },
-
-  async answerCb(token, id, text) {
-    return fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ callback_query_id: id, text })
-    });
+    
+    // Simple health check
+    return new Response('Telegram bot is running!', { status: 200 });
   }
 };
+
+// Setup webhook with Telegram
+async function setupWebhook(request, env) {
+  const webhookUrl = `${new URL(request.url).origin}/webhook`;
+  const token = env.TELEGRAM_BOT_TOKEN;
+  
+  if (!token) {
+    return new Response('TELEGRAM_BOT_TOKEN not set', { status: 500 });
+  }
+  
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/setWebhook?url=${webhookUrl}`
+  );
+  
+  const result = await response.json();
+  return new Response(JSON.stringify(result, null, 2), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+// Handle incoming Telegram updates
+async function handleTelegramUpdate(request, env) {
+  const update = await request.json();
+  console.log('Received update:', update);
+  
+  // Handle different update types
+  if (update.message) {
+    await handleMessage(update.message, env);
+  }
+  
+  return new Response('OK', { status: 200 });
+}
+
+// Handle incoming messages
+async function handleMessage(message, env) {
+  const chatId = message.chat.id;
+  const text = message.text;
+  
+  // Basic commands
+  if (text === '/start') {
+    await sendMessage(chatId, 'Welcome! Send me a file and I\'ll store it in R2.', env);
+    return;
+  }
+  
+  // Handle files
+  if (message.document) {
+    await handleDocument(message, env);
+  } else if (message.voice) {
+    await handleVoice(message, env);
+  } else if (message.audio) {
+    await handleAudio(message, env);
+  } else if (text) {
+    await sendMessage(chatId, 'Send me a file, voice message, or audio file to store in R2!', env);
+  }
+}
+
+// Handle document files
+async function handleDocument(message, env) {
+  const chatId = message.chat.id;
+  const document = message.document;
+  const fileId = document.file_id;
+  const fileName = document.file_name;
+  const fileSize = document.file_size;
+  
+  await sendMessage(chatId, `📁 Receiving: ${fileName} (${(fileSize / 1024).toFixed(1)} KB)`, env);
+  
+  try {
+    // Get file URL from Telegram
+    const fileUrl = await getTelegramFileUrl(fileId, env);
+    
+    // Download file
+    const fileResponse = await fetch(fileUrl);
+    const fileBuffer = await fileResponse.arrayBuffer();
+    
+    // Upload to R2
+    const key = `${Date.now()}_${fileName}`;
+    await env.AUDIO.put(key, fileBuffer, {
+      httpMetadata: {
+        contentType: document.mime_type,
+        contentDisposition: `attachment; filename="${fileName}"`
+      }
+    });
+    
+    await sendMessage(chatId, `✅ File saved to R2!\n📦 Bucket: zedtopvibes-audio\n🔑 Key: ${key}`, env);
+    
+  } catch (error) {
+    console.error('Error handling document:', error);
+    await sendMessage(chatId, '❌ Failed to save file to R2', env);
+  }
+}
+
+// Handle voice messages
+async function handleVoice(message, env) {
+  const chatId = message.chat.id;
+  const voice = message.voice;
+  const fileId = voice.file_id;
+  const duration = voice.duration;
+  
+  await sendMessage(chatId, `🎤 Receiving voice message (${duration}s)`, env);
+  
+  try {
+    const fileUrl = await getTelegramFileUrl(fileId, env);
+    const fileResponse = await fetch(fileUrl);
+    const fileBuffer = await fileResponse.arrayBuffer();
+    
+    const key = `voice_${Date.now()}.ogg`;
+    await env.AUDIO.put(key, fileBuffer, {
+      httpMetadata: {
+        contentType: 'audio/ogg',
+        contentDisposition: `inline; filename="${key}"`
+      }
+    });
+    
+    await sendMessage(chatId, `✅ Voice message saved to R2!\n📦 Bucket: zedtopvibes-audio\n🔑 Key: ${key}`, env);
+    
+  } catch (error) {
+    console.error('Error handling voice:', error);
+    await sendMessage(chatId, '❌ Failed to save voice message to R2', env);
+  }
+}
+
+// Handle audio files
+async function handleAudio(message, env) {
+  const chatId = message.chat.id;
+  const audio = message.audio;
+  const fileId = audio.file_id;
+  const fileName = audio.file_name || `audio_${Date.now()}.mp3`;
+  
+  await sendMessage(chatId, `🎵 Receiving: ${fileName}`, env);
+  
+  try {
+    const fileUrl = await getTelegramFileUrl(fileId, env);
+    const fileResponse = await fetch(fileUrl);
+    const fileBuffer = await fileResponse.arrayBuffer();
+    
+    const key = `${Date.now()}_${fileName}`;
+    await env.AUDIO.put(key, fileBuffer, {
+      httpMetadata: {
+        contentType: audio.mime_type || 'audio/mpeg',
+        contentDisposition: `inline; filename="${fileName}"`
+      }
+    });
+    
+    await sendMessage(chatId, `✅ Audio saved to R2!\n📦 Bucket: zedtopvibes-audio\n🔑 Key: ${key}`, env);
+    
+  } catch (error) {
+    console.error('Error handling audio:', error);
+    await sendMessage(chatId, '❌ Failed to save audio to R2', env);
+  }
+}
+
+// Helper: Get file URL from Telegram
+async function getTelegramFileUrl(fileId, env) {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`
+  );
+  
+  const data = await response.json();
+  if (!data.ok) throw new Error('Failed to get file info');
+  
+  const filePath = data.result.file_path;
+  return `https://api.telegram.org/file/bot${token}/${filePath}`;
+}
+
+// Helper: Send message to Telegram
+async function sendMessage(chatId, text, env) {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'HTML'
+    })
+  });
+}
