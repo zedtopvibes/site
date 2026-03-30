@@ -3,7 +3,7 @@ export default {
     if (request.method !== "POST") return new Response("OK");
 
     const update = await request.json();
-    const msg = update.message;
+    const msg = update.message; 
     if (!msg) return new Response("OK");
  
     const ADMIN_ID = 5672184873;
