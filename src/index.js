@@ -1,105 +1,111 @@
 export default {
+  // Use your specific Worker URL
+  BASE_URL: "https://aitestzmbot.zedtopvibes.workers.dev",
+  ADMIN_ID: 5672184873, 
+
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
-    const ADMIN_ID = 5672184873;
-    const CHANNEL_ID = -1003779504495;
-    const BOT_USERNAME = "aitestzmbot";
+    const token = env.TELEGRAM_BOT_TOKEN;
+    const { pathname } = new URL(request.url);
 
-    // --- 1. THE DOWNLOAD PAGE (HTML) ---
-    if (url.pathname.startsWith("/dl/")) {
-      const slug = url.pathname.split("/")[2];
-      const file = await env.DB.prepare("SELECT * FROM files WHERE slug = ?").bind(slug).first();
+    // --- 1. THE WEB SERVER (Browser Request) ---
+    // This creates the "Download Page" when a user clicks a link
+    if (pathname.startsWith("/download/")) {
+      const id = pathname.split("/")[2];
+      const song = await env.DB.prepare("SELECT * FROM music_library WHERE id = ?").bind(id).first();
+      
+      if (!song) return new Response("404: Song Not Found", { status: 404 });
 
-      if (!file) return new Response("File not found.", { status: 404 });
-
-      // Professional UI for the download page
+      // This is the HTML for your download page
       const html = `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Download ${file.file_name}</title>
-          <style>
-              body { font-family: 'Inter', sans-serif; background: #0f172a; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-              .card { background: #1e293b; padding: 2.5rem; border-radius: 1.5rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); text-align: center; max-width: 400px; width: 90%; border: 1px solid #334155; }
-              h1 { font-size: 1.25rem; margin-bottom: 1rem; color: #38bdf8; }
-              p { font-size: 0.9rem; color: #94a3b8; margin-bottom: 2rem; line-height: 1.5; }
-              .btn { background: #38bdf8; color: #0f172a; padding: 0.8rem 2rem; text-decoration: none; border-radius: 0.75rem; font-weight: 700; display: inline-block; transition: all 0.2s; }
-              .btn:hover { background: #7dd3fc; transform: translateY(-2px); }
-          </style>
-      </head>
-      <body>
-          <div class="card">
-              <h1>File Ready</h1>
-              <p>You requested: <br><strong>${file.file_name}</strong></p>
-              <a href="https://t.me/${BOT_USERNAME}?start=${slug}" class="btn">Get File in Telegram</a>
-          </div>
-      </body>
-      </html>`;
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Download: ${song.title}</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+              body { font-family: sans-serif; text-align: center; padding: 50px; background: #f4f4f9; }
+              .card { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: inline-block; }
+              .btn { background: #0088cc; color: white; padding: 15px 30px; text-decoration: none; border-radius: 50px; font-weight: bold; display: inline-block; margin-top: 20px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <h1 style="margin:0;">${song.title}</h1>
+              <p style="color:#666;">by ${song.artist}</p>
+              <hr>
+              <p>To get this file, click the button below to open it in Telegram:</p>
+              <a href="https://t.me/aitestzmbot?start=dl_${id}" class="btn">📥 GET FILE IN TELEGRAM</a>
+            </div>
+          </body>
+        </html>`;
       return new Response(html, { headers: { "Content-Type": "text/html" } });
     }
 
-    // --- 2. TELEGRAM BOT LOGIC ---
-    if (request.method === "POST") {
-      const update = await request.json();
-      const msg = update.message;
-      if (!msg) return new Response("OK");
+    // --- 2. THE TELEGRAM BOT (Webhook Request) ---
+    if (request.method === 'POST') {
+      try {
+        const update = await request.json();
+        const msg = update.message;
+        if (!msg) return new Response("OK");
 
-      // CASE A: User clicked the website button (Deep Link)
-      if (msg.text?.startsWith("/start ")) {
-        const slug = msg.text.split(" ")[1];
-        const file = await env.DB.prepare("SELECT * FROM files WHERE slug = ?").bind(slug).first();
+        const chatId = msg.chat.id;
+        const text = msg.text || "";
 
-        if (file) {
-          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              chat_id: msg.chat.id,
-              document: file.file_id,
-              caption: `🎵 Sent via ZedTop Vibes\nFile: ${file.file_name}`
-            })
-          });
+        // ADMIN UPLOAD: Save to DB and give Web Link
+        if (msg.audio && msg.from.id === this.ADMIN_ID) {
+          const { success, lastRowId } = await env.DB.prepare(
+            "INSERT INTO music_library (title, artist, telegram_file_id) VALUES (?, ?, ?)"
+          ).bind(msg.audio.title || "Unknown", msg.audio.performer || "Unknown", msg.audio.file_id).run();
+
+          if (success) {
+            return this.sendText(chatId, token, `✅ *Song Indexed!*\n\nWeb Link: ${this.BASE_URL}/download/${lastRowId}`);
+          }
         }
-        return new Response("OK");
+
+        // FILE DELIVERY: Sent when user hits /start dl_ID
+        if (text.startsWith("/start dl_")) {
+          const id = text.split("dl_")[1];
+          const song = await env.DB.prepare("SELECT * FROM music_library WHERE id = ?").bind(id).first();
+          if (song) {
+            return fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: chatId,
+                audio: song.telegram_file_id,
+                caption: `🎵 ${song.title} - ${song.artist}\n\nThanks for using ZedTopVibes!`
+              })
+            });
+          }
+        }
+
+        // SEARCH: Returns the Web Link
+        if (text && !text.startsWith("/")) {
+          const results = await env.DB.prepare("SELECT * FROM music_library WHERE title LIKE ? OR artist LIKE ? LIMIT 5")
+            .bind(`%${text}%`, `%${text}%`).all();
+
+          if (results.results.length > 0) {
+            let resp = "🔎 *Results:*\n\n";
+            results.results.forEach(s => {
+              resp += `🎵 *${s.title}*\n🔗 [Open Download Page](${this.BASE_URL}/download/${s.id})\n\n`;
+            });
+            return this.sendText(chatId, token, resp);
+          }
+        }
+
+      } catch (e) {
+        return this.sendText(this.ADMIN_ID, token, "🚨 Error: " + e.message);
       }
-
-      // CASE B: Admin Uploading a File
-      if (msg.from.id === ADMIN_ID && msg.document) {
-        const slug = crypto.randomUUID().split('-')[0];
-
-        // 1. Forward to Private Channel
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/forwardMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: CHANNEL_ID,
-            from_chat_id: msg.chat.id,
-            message_id: msg.message_id
-          })
-        });
-
-        // 2. Save to D1
-        await env.DB.prepare("INSERT INTO files (file_id, file_name, slug) VALUES (?, ?, ?)")
-          .bind(msg.document.file_id, msg.document.file_name, slug).run();
-
-        // 3. Send Download Link back to Admin
-        const link = `https://zedtopvibes.workers.dev/dl/${slug}`;
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: ADMIN_ID,
-            text: `✅ **File Stored & Linked!**\n\n**Name:** \`${msg.document.file_name}\`\n**Link:** ${link}`,
-            parse_mode: "Markdown"
-          })
-        });
-      }
-      return new Response("OK");
     }
 
-    return new Response("Worker is active.");
+    return new Response("ZedTopVibes Hybrid Bot: Online.");
+  },
+
+  async sendText(chatId, token, text) {
+    return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
+    });
   }
 };
