@@ -2,26 +2,19 @@ name = "aitestzmbot"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# AI Binding
-[ai]
-binding = "AI"
-
-# D1 Database
+# 1. D1 Database Binding
+# This connects 'env.DB' in your code to your actual database
 [[d1_databases]]
-binding = "DB"
+binding = "DB" 
 database_name = "tgdata"
 database_id = "8417c1a2-e920-4b5d-9394-79c9f56ec0f4"
 
+# 2. AI Binding
+# If you decide to use AI features (like caption generation) later
+[ai]
+binding = "AI"
 
-# Environment Variables (NO secrets here!)
+# 3. Environment Variables
+# Use these for public info. For the Bot Token, use SECRETS.
 [vars]
-# TELEGRAM_BOT_TOKEN is set as a SECRET, not here
-# ADMIN_IDS = "123456789,987654321"  # Optional, set as secret
-
-# For production
-[env.production]
-# Add production-specific settings here
-
-# For preview
-[env.preview]
-# Add preview-specific settings here
+# You can put non-sensitive config here if needed
