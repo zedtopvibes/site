@@ -9,13 +9,9 @@ binding = "AI"
 # D1 Database
 [[d1_databases]]
 binding = "DB"
-database_name = "zedtopvibes-db"
-database_id = "73f2a3ac-0d13-454b-9e77-36d5a78c1762"
+database_name = "tgdata"
+database_id = "8417c1a2-e920-4b5d-9394-79c9f56ec0f4"
 
-# R2 Bucket
-[[r2_buckets]]
-binding = "AUDIO"
-bucket_name = "zedtopvibes-audio"
 
 # Environment Variables (NO secrets here!)
 [vars]
