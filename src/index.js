@@ -136,7 +136,7 @@ export default {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } })
     });
-  },
+  }, 
 
   async sendText(chatId, token, text) {
     return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
