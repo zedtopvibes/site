@@ -1,5 +1,4 @@
 export default {
-  // 1. CONFIGURATION
   ADMIN_ID: 5672184873, 
   BASE_URL: "https://aitestzmbot.zedtopvibes.workers.dev", 
 
@@ -26,29 +25,36 @@ export default {
       }
     }
 
-    return new Response("🚀 ZedTopVibes R2 Engine is Live.");
+    return new Response("🚀 ZedTopVibes Direct R2 Active.");
   },
 
   /**
-   * WEB: Generates a professional download page
+   * WEB: The Download Page (Finds files matching the keyword)
    */
   async handleDownloadPage(url, env) {
-    const artistRaw = url.pathname.split('/download/')[1];
-    if (!artistRaw) return new Response("Artist not found", { status: 404 });
+    const searchRaw = url.pathname.split('/download/')[1];
+    if (!searchRaw) return new Response("Search term missing", { status: 404 });
     
-    // decodeURIComponent handles %20 (spaces) correctly for the UI
-    const artistName = decodeURIComponent(artistRaw).replace(/_/g, ' ');
-    const list = await env.AUDIO.list({ prefix: `${decodeURIComponent(artistRaw)}/` });
+    const searchTerm = decodeURIComponent(searchRaw).toLowerCase();
+    
+    // 1. List ALL files in the bucket
+    const list = await env.AUDIO.list();
+    
+    // 2. Filter: Find any file that contains the search term in its name
+    const matches = list.objects.filter(obj => 
+      obj.key.toLowerCase().includes(searchTerm)
+    );
     
     const encodedUrl = encodeURIComponent(url.href);
-    const encodedText = encodeURIComponent(`🔥 Check out the latest music from ${artistName}!`);
+    const encodedText = encodeURIComponent(`🔥 Download music on ZedTopVibes!`);
 
-    let rows = list.objects.map(obj => {
-      const fileName = obj.key.split('/').pop().replace(/_/g, ' ').replace('.mp3', '');
+    let rows = matches.map(obj => {
+      // Clean up the name for the UI (remove .mp3 and underscores)
+      const displayName = obj.key.replace(/_/g, ' ').replace('.mp3', '');
       return `
         <div class="track-card">
           <div class="info">
-            <span class="name">${fileName}</span>
+            <span class="name">${displayName}</span>
             <span class="size">${(obj.size / 1024 / 1024).toFixed(2)} MB</span>
           </div>
           <a href="/file/${encodeURIComponent(obj.key)}" class="dl-btn">Download</a>
@@ -59,40 +65,38 @@ export default {
     <html>
       <head>
         <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>${artistName} | ZedTopVibes</title>
+        <title>Download ${searchTerm} | ZedTopVibes</title>
         <style>
-          body { font-family: sans-serif; background: #0f172a; color: white; padding: 20px; }
+          body { font-family: sans-serif; background: #0f172a; color: white; padding: 20px; margin: 0; }
           .container { max-width: 600px; margin: auto; }
-          .share-row { display: flex; gap: 10px; margin-bottom: 20px; }
-          .share-btn { flex: 1; text-align: center; padding: 10px; border-radius: 8px; color: white; text-decoration: none; font-weight: bold; font-size: 0.8rem; }
-          .track-card { background: #1e293b; padding: 15px; border-radius: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-          .dl-btn { background: #0ea5e9; color: white; text-decoration: none; padding: 10px 15px; border-radius: 8px; font-size: 0.9rem; }
+          h1 { color: #38bdf8; text-transform: capitalize; }
+          .track-card { background: #1e293b; padding: 15px; border-radius: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #334155; }
+          .info { display: flex; flex-direction: column; }
+          .name { font-weight: bold; }
+          .size { font-size: 0.8rem; color: #94a3b8; }
+          .dl-btn { background: #0ea5e9; color: white; text-decoration: none; padding: 10px 15px; border-radius: 8px; font-weight: bold; }
         </style>
       </head>
       <body>
         <div class="container">
-          <h1>${artistName}</h1>
-          <div class="share-row">
-            <a href="https://t.me/share/url?url=${encodedUrl}&text=${encodedText}" class="share-btn" style="background:#229ED9">Telegram</a>
-            <a href="https://wa.me/?text=${encodedText}%20${encodedUrl}" class="share-btn" style="background:#25D366">WhatsApp</a>
-          </div>
-          ${rows || '<p>No tracks found.</p>'}
+          <h1>${searchTerm.replace(/_/g, ' ')}</h1>
+          ${rows || '<div class="track-card">No files found matching that name.</div>'}
         </div>
       </body>
     </html>`, { headers: { "Content-Type": "text/html" } });
   },
 
   /**
-   * WEB: File Streaming
+   * WEB: Direct File Stream
    */
   async handleFileStream(url, env) {
     const key = decodeURIComponent(url.pathname.replace('/file/', ''));
     const object = await env.AUDIO.get(key);
-    if (!object) return new Response("Not Found", { status: 404 });
+    if (!object) return new Response("File Not Found", { status: 404 });
 
     const headers = new Headers();
     object.writeHttpMetadata(headers);
-    headers.set("Content-Disposition", `attachment; filename="${key.split('/').pop()}"`);
+    headers.set("Content-Disposition", `attachment; filename="${key}"`);
     return new Response(object.body, { headers });
   },
 
@@ -107,12 +111,13 @@ export default {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
 
-    // 1. ADMIN UPLOAD
+    // 1. ADMIN UPLOAD (Saves as a single flat file)
     if (msg.audio && userId === this.ADMIN_ID) {
-      // Clean names: Replace spaces with underscores for storage safety
-      const performer = (msg.audio.performer || "Unknown").trim().replace(/\s+/g, '_');
-      const title = (msg.audio.title || "Track").trim().replace(/\s+/g, '_');
-      const r2Key = `${performer}/${title}.mp3`;
+      const performer = (msg.audio.performer || "Unknown").trim();
+      const title = (msg.audio.title || "Track").trim();
+      
+      // Filename: "Artist - Title.mp3"
+      const r2Key = `${performer} - ${title}.mp3`.replace(/\s+/g, ' ');
 
       const getFile = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${msg.audio.file_id}`);
       const fileData = await getFile.json();
@@ -120,28 +125,26 @@ export default {
       
       await env.AUDIO.put(r2Key, download.body);
 
-      // FIX: Encode the link for Telegram Markdown
+      // Link to the specific file's search/download page
       const safeLink = `${this.BASE_URL}/download/${encodeURIComponent(performer)}`;
-      return this.sendText(chatId, token, `✅ *R2 UPLOADED*\n\n👤 Artist: ${performer.replace(/_/g, ' ')}\n🔗 [View Download Page](${safeLink})`);
+      return this.sendText(chatId, token, `✅ *UPLOADED TO R2*\n\n📄 File: \`${r2Key}\`\n\n🔗 [Download Page](${safeLink})`);
     }
 
     // 2. SEARCH
     if (msg.text) {
       const query = msg.text.toLowerCase().trim();
-      if (query === '/start') return this.sendText(chatId, token, "Send an Artist name to find their music!");
+      if (query === '/start') return this.sendText(chatId, token, "Send a song or artist name!");
 
+      // List and check if any file name includes the query
       const list = await env.AUDIO.list();
-      const artists = [...new Set(list.objects.map(o => o.key.split('/')[0]))];
-      const match = artists.find(a => a.toLowerCase().includes(query.replace(/\s+/g, '_')));
+      const match = list.objects.find(o => o.key.toLowerCase().includes(query));
 
       if (match) {
-        // FIX: Wrap the encoded URL in Markdown so it doesn't break
-        const safeLink = `${this.BASE_URL}/download/${encodeURIComponent(match)}`;
-        return this.sendText(chatId, token, 
-          `🔎 *Found:* ${match.replace(/_/g, ' ')}\n\n🔗 [Open Download Page](${safeLink})`
-        );
+        // We use the matched part to generate a search link
+        const safeLink = `${this.BASE_URL}/download/${encodeURIComponent(query)}`;
+        return this.sendText(chatId, token, `🔎 *Results for "${query}":*\n\n🔗 [Open Download Page](${safeLink})`);
       }
-      return this.sendText(chatId, token, "❌ No artist found in R2.");
+      return this.sendText(chatId, token, "❌ No files found in R2.");
     }
 
     return new Response("OK");
