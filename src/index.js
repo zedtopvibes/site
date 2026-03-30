@@ -1,125 +1,124 @@
 export default {
-  // --- CONFIGURATION ---
+  // 1. CONFIGURATION
   ADMIN_ID: 5672184873, 
-  STORAGE_CHANNEL: -1003779504495, 
-  BOT_USERNAME: "aitestzmbot",
+  BOT_USERNAME: "aitestzmbot", // Your bot's handle without @
+  BASE_URL: "https://aitestzmbot.zedtopvibes.workers.dev",
 
   async fetch(request, env) {
+    const url = new URL(request.url);
     const token = env.TELEGRAM_BOT_TOKEN;
-    if (request.method !== 'POST') return new Response("ZedTopVibes Engine Live.");
 
-    try {
-      const update = await request.json();
-      const msg = update.message || update.callback_query?.message;
-      if (!msg) return new Response("OK");
+    // --- ROUTE A: WEB DOWNLOAD PAGE ---
+    if (url.pathname.startsWith('/download/')) {
+      return await this.handleWebPage(url, env);
+    }
 
-      const chatId = msg.chat.id;
-      const userId = update.callback_query?.from.id || msg.from.id;
-      const isAdmin = userId === this.ADMIN_ID;
-
-      // --- 1. ADMIN BUTTON HANDLER ---
-      if (update.callback_query && isAdmin) {
-        const data = update.callback_query.data;
-        const [action, type, fileId] = data.split(':');
-
-        if (action === 'settype') {
-          await env.DB.prepare("INSERT OR REPLACE INTO admin_state (user_id, step, file_id) VALUES (?, ?, ?)")
-            .bind(userId, `awaiting_name_${type}`, fileId).run();
-          
-          const prompt = type === 'single' ? "Enter Artist - Title (e.g. Yo Maps - Pressure)" : "Enter Album Name:";
-          return this.sendText(chatId, token, `✍️ ${prompt}`);
-        }
-      }
-
-      // --- 2. ADMIN TEXT INPUT (Steps) ---
-      if (msg.text && isAdmin && !msg.text.startsWith('/')) {
-        const state = await env.DB.prepare("SELECT * FROM admin_state WHERE user_id = ?").bind(userId).first();
+    // --- ROUTE B: TELEGRAM BOT WEBHOOK ---
+    if (request.method === 'POST') {
+      try {
+        const update = await request.json();
         
-        if (state) {
-          if (state.step === 'awaiting_name_single') {
-            const parts = msg.text.split('-').map(s => s.trim());
-            await this.finishUpload(chatId, token, env, state.file_id, parts[0] || "Unknown", parts[1] || "Track", "Single");
-            await env.DB.prepare("DELETE FROM admin_state WHERE user_id = ?").bind(userId).run();
-            return new Response("OK");
-          }
+        // 1. CHANNEL INDEXING (When you post to your Private Channel)
+        if (update.channel_post?.audio) {
+          const audio = update.channel_post.audio;
+          const title = (audio.title || "Unknown").replace(/'/g, "''");
+          const artist = (audio.performer || "Unknown").replace(/'/g, "''");
+          
+          await env.DB.prepare(
+            "INSERT INTO tg_storage (title, artist, telegram_file_id) VALUES (?, ?, ?)"
+          ).bind(title, artist, audio.file_id).run();
+          return new Response("Indexed");
+        }
 
-          if (state.step === 'awaiting_name_album') {
-            await env.DB.prepare("UPDATE admin_state SET step = 'awaiting_artist_album', album_name = ? WHERE user_id = ?")
-              .bind(msg.text, userId).run();
-            return this.sendText(chatId, token, "👤 Enter the Artist Name for this album:");
-          }
+        const msg = update.message;
+        if (!msg) return new Response("OK");
+        const chatId = msg.chat.id;
 
-          if (state.step === 'awaiting_artist_album') {
-            await this.finishUpload(chatId, token, env, state.file_id, msg.text, "Album Track", state.album_name);
-            await env.DB.prepare("DELETE FROM admin_state WHERE user_id = ?").bind(userId).run();
-            return new Response("OK");
+        // 2. DEEP LINK DELIVERY (When user clicks /start dl_ID)
+        if (msg.text?.startsWith('/start dl_')) {
+          const storageId = msg.text.split('dl_')[1];
+          const file = await env.DB.prepare("SELECT * FROM tg_storage WHERE id = ?").bind(storageId).first();
+
+          if (file) {
+            return await this.sendAudio(chatId, file.telegram_file_id, token, file.title, file.artist);
           }
         }
-      }
 
-      // --- 3. ADMIN FILE UPLOAD ---
-      if (msg.audio && isAdmin) {
-        return this.sendKeyboard(chatId, token, "🎧 *Audio Received!*\nSave as:", [
-          [{ text: "🎵 Single Track", callback_data: `settype:single:${msg.audio.file_id}` }],
-          [{ text: "💿 Part of Album", callback_data: `settype:album:${msg.audio.file_id}` }]
-        ]);
-      }
+        // 3. IN-BOT SEARCH (When user types "Kanina" or "uValo")
+        if (msg.text && !msg.text.startsWith('/')) {
+          const query = msg.text.trim();
+          const results = await env.DB.prepare(
+            "SELECT * FROM tg_storage WHERE artist LIKE ? OR title LIKE ? LIMIT 5"
+          ).bind(`%${query}%`, `%${query}%`).all();
 
-      // --- 4. PUBLIC SEARCH & DELIVERY ---
-      const text = msg.text || "";
-      if (text.startsWith('/start dl_')) {
-        const track = await env.DB.prepare("SELECT * FROM tg_storage WHERE id = ?").bind(text.split('dl_')[1]).first();
-        if (track) return this.sendAudio(chatId, track.telegram_file_id, token, track.title, track.artist);
-      }
+          if (results.results.length > 0) {
+            let text = `🔎 *Search Results for "${query}":*\n\n`;
+            results.results.forEach(t => {
+              text += `🎵 *${t.title}*\n👤 ${t.artist}\n📥 [/start dl_${t.id}](https://t.me/${this.BOT_USERNAME}?start=dl_${t.id})\n\n`;
+            });
+            return this.sendText(chatId, token, text);
+          } else {
+            return this.sendText(chatId, token, `❌ No tracks found for "${query}".`);
+          }
+        }
 
-      if (text.startsWith('/start album_')) {
-        const album = decodeURIComponent(text.split('album_')[1]);
-        const tracks = await env.DB.prepare("SELECT * FROM tg_storage WHERE album = ?").bind(album).all();
-        for (const t of tracks.results) { await this.sendAudio(chatId, t.telegram_file_id, token, t.title, t.artist); }
+      } catch (e) {
         return new Response("OK");
       }
-
-      if (text && !text.startsWith('/') && !isAdmin) {
-        const results = await env.DB.prepare(
-          "SELECT *, COUNT(*) as c FROM tg_storage WHERE artist LIKE ? OR title LIKE ? OR album LIKE ? GROUP BY CASE WHEN album='Single' THEN id ELSE album END LIMIT 5"
-        ).bind(`%${text}%`, `%${text}%`, `%${text}%`).all();
-
-        if (results.results.length > 0) {
-          let resp = `🔎 *Results:*\n\n`;
-          results.results.forEach(r => {
-            const isA = r.album !== 'Single';
-            const cmd = isA ? `album_${encodeURIComponent(r.album)}` : `dl_${r.id}`;
-            resp += `${isA ? '💿' : '🎵'} *${isA ? r.album : r.title}*\n👤 ${r.artist}\n📥 [/start ${cmd}](https://t.me/${this.BOT_USERNAME}?start=${cmd})\n\n`;
-          });
-          return this.sendText(chatId, token, resp);
-        }
-      }
-
-    } catch (e) {
-      // This part ensures you get an error message if the database fails!
-      return this.sendText(this.ADMIN_ID, token, "🚨 Error: " + e.message);
     }
-    return new Response("OK");
+
+    return new Response("ZedTopVibes Engine Active.");
   },
 
-  async finishUpload(chatId, token, env, fileId, artist, title, album) {
-    const fwd = await fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: this.STORAGE_CHANNEL, audio: fileId, caption: `✅ ${title} - ${artist} [${album}]` })
-    });
-    const fwdRes = await fwd.json();
-    const newFileId = fwdRes.result.audio.file_id;
-    await env.DB.prepare("INSERT INTO tg_storage (title, artist, album, telegram_file_id) VALUES (?, ?, ?, ?)")
-      .bind(title, artist, album, newFileId).run();
-    return this.sendText(chatId, token, `✅ Successfully Indexed to ${album}.`);
+  /**
+   * WEB: Displays tracks and links them to the Bot Inbox
+   */
+  async handleWebPage(url, env) {
+    const artistQuery = decodeURIComponent(url.pathname.split('/download/')[1]);
+    const files = await env.DB.prepare(
+      "SELECT * FROM tg_storage WHERE artist LIKE ? OR title LIKE ? ORDER BY id DESC"
+    ).bind(`%${artistQuery}%`, `%${artistQuery}%`).all();
+
+    const rows = files.results.map(f => `
+      <div class="card">
+        <div class="info">
+          <div class="title">${f.title}</div>
+          <div class="artist">${f.artist}</div>
+        </div>
+        <a href="https://t.me/${this.BOT_USERNAME}?start=dl_${f.id}" class="dl-btn">Get in Telegram</a>
+      </div>
+    `).join('');
+
+    return new Response(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body { font-family: sans-serif; background: #0f172a; color: white; padding: 20px; }
+            .card { background: #1e293b; padding: 15px; border-radius: 12px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #334155; }
+            .title { font-weight: bold; color: #38bdf8; }
+            .artist { font-size: 0.85rem; color: #94a3b8; }
+            .dl-btn { background: #0ea5e9; color: white; text-decoration: none; padding: 10px 15px; border-radius: 8px; font-weight: bold; }
+          </style>
+        </head>
+        <body>
+          <h2>Download: ${artistQuery}</h2>
+          ${rows || '<p>No tracks found.</p>'}
+        </body>
+      </html>`, { headers: { 'Content-Type': 'text/html' } });
   },
 
-  async sendKeyboard(chatId, token, text, keyboard) {
-    return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  async sendAudio(chatId, fileId, token, title, artist) {
+    return fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } })
+      body: JSON.stringify({ 
+        chat_id: chatId, 
+        audio: fileId, 
+        caption: `✅ *${title}* - ${artist}\n🚀 Shared via ZedTopVibes`,
+        parse_mode: 'Markdown'
+      })
     });
   },
 
@@ -127,15 +126,7 @@ export default {
     return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
-    });
-  },
-
-  async sendAudio(chatId, fileId, token, title, artist) {
-    return fetch(`https://api.telegram.org/bot${token}/sendAudio`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, audio: fileId, caption: `🎵 ${title} - ${artist}` })
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', disable_web_page_preview: true })
     });
   }
 };
