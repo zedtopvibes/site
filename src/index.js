@@ -29,7 +29,7 @@ async function processUpdate(update, env) {
 				"👋 <b>Welcome to Aitestzm Bot!</b>\n\n" +
 				"Send me any file to upload to Cloudflare R2.\n\n" +
 				"<b>Commands:</b>\n" +
-				"/search <keyword> - Search files & select to download\n" +
+				"/search <keyword> - Search files & download\n" +
 				"/list - Show last 10 uploaded files\n" +
 				"/help - Show this message", 
 				env.TELEGRAM_BOT_TOKEN
@@ -75,13 +75,6 @@ async function processUpdate(update, env) {
 			await handleDeleteCommand(chatId, key, env);
 			return;
 		}
-		
-		// Handle Callback Queries (for Search Results)
-		if (text.startsWith("/download_")) {
-			const key = text.replace("/download_", "");
-			await handleDownloadRequest(chatId, key, env);
-			return;
-		}
 	}
 
 	// 2. Handle File Uploads
@@ -95,232 +88,17 @@ async function processUpdate(update, env) {
 	}
 }
 
-// --- Feature: Smart Search (List & Select) ---
-async function handleSearchCommand(chatId, query, env) {	try {
-		await sendMessage(chatId, `🔍 Searching for "${query}"...`, env.TELEGRAM_BOT_TOKEN);
-
-		// List objects (Limit 50 for search results)
-		const listed = await env.MY_BUCKET.list({ limit: 50 });
-		
-		const lowerQuery = query.toLowerCase();
-		const matches = listed.objects.filter(obj => 
-			obj.key.toLowerCase().includes(lowerQuery)
-		);
-
-		if (matches.length === 0) {
-			await sendMessage(chatId, `❌ No files found for "${query}".`, env.TELEGRAM_BOT_TOKEN);
-			return;
-		}
-
-		// Create a selectable list
-		let text = `✅ Found ${matches.length} files. Click to download:\n\n`;
-		
-		// Limit display to 10 items to keep message clean
-		const displayMatches = matches.slice(0, 10);
-		
-		displayMatches.forEach((obj, index) => {
-			// Create a command-like link for each file
-			// Note: Telegram doesn't support inline buttons in simple text messages easily without InlineKeyboard.
-			// For simplicity in this V2, we will use "Click-to-Run" commands if the user clicks the text? 
-			// No, Telegram text isn't clickable for commands. 
-			// We will use a simpler approach: List them, and ask user to type /download <key> OR use Inline Keyboard.
-			
-			// Let's use Inline Keyboard for best UX.
-		});
-
-		// Since we are using simple fetch, constructing Inline Keyboard JSON is complex.
-		// Alternative Simple UX: ListLet's refine the existing features to make them more robust, user-friendly, and efficient. We will focus on three key areas:
-
-1.  **Smarter Search**: Instead of just sending files immediately (which can spam the chat), we'll send a **selectable list** first. The user can then click to download the specific file they want.
-2.  **Better Upload Feedback**: Show progress or at least handle large files more gracefully with better error messages.
-3.  **Improved List Command**: Make `/list` more readable and add pagination if needed (though for V2, we'll stick to a clean top-10 list).
-
-### Updated `src/index.js`
-
-This version introduces a **"Search & Select"** workflow.
-
-```javascript
-export default {
-	async fetch(request, env, ctx) {
-		if (request.method === "POST") {
-			try {
-				const update = await request.json();
-				ctx.waitUntil(processUpdate(update, env));				return new Response("OK", { status: 200 });
-			} catch (error) {
-				console.error("Webhook Error:", error);
-				return new Response("Internal Error", { status: 500 });
-			}
-		}
-		return new Response("Bot is running!", { status: 200 });
-	},
-};
-
-async function processUpdate(update, env) {
-	if (!update.message) return;
-
-	const message = update.message;
-	const chatId = message.chat.id;
-	const userId = message.from?.id;
-	const text = message.text;
-
-	// 1. Handle Commands
-	if (text) {
-		if (text.startsWith("/start")) {
-			await sendMessage(chatId, 
-				"👋 <b>Welcome to Aitestzm Bot!</b>\n\n" +
-				"Send me any file to upload to Cloudflare R2.\n\n" +
-				"<b>Commands:</b>\n" +
-				"/search <keyword> - Search files & select to download\n" +
-				"/list - Show last 10 uploaded files\n" +
-				"/help - Show this message", 
-				env.TELEGRAM_BOT_TOKEN
-			);
-			return;
-		}
-		
-		if (text.startsWith("/help")) {
-			await sendMessage(chatId, 
-				"📚 <b>Help</b>\n" +
-				"• <b>Upload:</b> Send any file (Doc, Photo, Video).\n" +
-				"• <b>Search:</b> /search song → Click result to download.\n" +
-				"• <b>Delete:</b> Admins only: /delete <key>", 
-				env.TELEGRAM_BOT_TOKEN
-			);
-			return;
-		}
-
-		if (text.startsWith("/search")) {
-			const query = text.replace("/search", "").trim();
-			if (!query) {
-				await sendMessage(chatId, "Usage: /search <keyword>", env.TELEGRAM_BOT_TOKEN);
-				return;
-			}			await handleSearchCommand(chatId, query, env);
-			return;
-		}
-
-		if (text.startsWith("/list")) {
-			await handleListCommand(chatId, env);
-			return;
-		}
-
-		if (text.startsWith("/delete")) {
-			if (String(userId) !== env.ADMIN_ID) {
-				await sendMessage(chatId, "🚫 Admins only.", env.TELEGRAM_BOT_TOKEN);
-				return;
-			}
-			const key = text.split(" ")[1];
-			if (!key) {
-				await sendMessage(chatId, "Usage: /delete <file_key>", env.TELEGRAM_BOT_TOKEN);
-				return;
-			}
-			await handleDeleteCommand(chatId, key, env);
-			return;
-		}
-		
-		// Handle Callback Queries (for Search Results)
-		if (text.startsWith("/download_")) {
-			const key = text.replace("/download_", "");
-			await handleDownloadRequest(chatId, key, env);
-			return;
-		}
-	}
-
-	// 2. Handle File Uploads
-	const fileObj = message.document || 
-					message.video || 
-					message.audio || 
-					(message.photo ? message.photo[message.photo.length - 1] : null);
-
-	if (fileObj) {
-		await handleFileUpload(chatId, fileObj, env);
-	}
-}
-
-// --- Feature: Smart Search (List & Select) ---
+// --- Feature: Smart Search ---
 async function handleSearchCommand(chatId, query, env) {
 	try {
 		await sendMessage(chatId, `🔍 Searching for "${query}"...`, env.TELEGRAM_BOT_TOKEN);
 
 		// List objects (Limit 50 for search results)
 		const listed = await env.MY_BUCKET.list({ limit: 50 });
-				const lowerQuery = query.toLowerCase();
-		const matches = listed.objects.filter(obj => 
+		
+		const lowerQuery = query.toLowerCase();		const matches = listed.objects.filter(obj => 
 			obj.key.toLowerCase().includes(lowerQuery)
 		);
-
-		if (matches.length === 0) {
-			await sendMessage(chatId, `❌ No files found for "${query}".`, env.TELEGRAM_BOT_TOKEN);
-			return;
-		}
-
-		// Create a selectable list
-		let text = `✅ Found ${matches.length} files. Click to download:\n\n`;
-		
-		// Limit display to 10 items to keep message clean
-		const displayMatches = matches.slice(0, 10);
-		
-		displayMatches.forEach((obj, index) => {
-			// Create a command-like link for each file
-			// Note: Telegram doesn't support inline buttons in simple text messages easily without InlineKeyboard.
-			// For simplicity in this V2, we will use "Click-to-Run" commands if the user clicks the text? 
-			// No, Telegram text isn't clickable for commands. 
-			// We will use a simpler approach: List them, and ask user to type /download <key> OR use Inline Keyboard.
-			
-			// Let's use Inline Keyboard for best UX.
-		});
-
-		// Since we are using simple fetch, constructing Inline Keyboard JSON is complex.
-		// Alternative Simple UX: List keys and tell user to copy-paste or use /download <key>
-		
-		text = `✅ Found ${matches.length} files (showing top 10):\n\n`;
-		displayMatches.forEach((obj, i) => {
-			const shortKey = obj.key.length > 40 ? obj.key.substring(0, 40) + "..." : obj.key;
-			text += `${i+1}. <code>${obj.key}</code>\n`;
-		});
-		
-		text += `\n<i>To download, reply with: /download &lt;full_key&gt;</i>`;
-		
-		await sendMessage(chatId, text, env.TELEGRAM_BOT_TOKEN);
-
-	} catch (error) {
-		console.error(error);
-		await sendMessage(chatId, `❌ Search Error: ${error.message}`, env.TELEGRAM_BOT_TOKEN);
-	}
-}
-
-// --- Feature: Handle Download Request ---
-async function handleDownloadRequest(chatId, key, env) {
-	// If key is empty (user typed /download without key)
-	if (!key || key === "") {
-		await sendMessage(chatId, "Please provide a valid key.", env.TELEGRAM_BOT_TOKEN);		return;
-	}
-	
-	// If the key was passed from a command like /download_1234_file.pdf
-	// But since we can't easily pass full keys in commands due to length/spacing,
-	// Let's assume the user copies the key from /list or /search and types:
-	// /download 1712345678_abc_file.pdf
-	
-	// However, handling spaces in commands is tricky. 
-	// Let's stick to the previous "Send Actual File" approach but triggered by a specific command.
-	
-	// Actually, let's improve the previous "Search sends files" approach but limit it.
-	// If matches <= 3, send files directly. If > 3, send list.
-	
-	// For now, let's implement a direct download handler if we can get the key.
-	// We will use a helper to parse the key from the message if it was sent as a reply or argument.
-	
-	// Let's simplify: We will use the /search command to send files directly if there are few results.
-	// This was the previous behavior. Let's revert to that but with a limit of 3 files to prevent spam.
-	
-	await handleDirectDownloadSearch(chatId, key, env); // This is a placeholder for logic below
-}
-
-// Revised Search: Direct Download for Few Results
-async function handleDirectDownloadSearch(chatId, query, env) {
-	 try {
-		const listed = await env.MY_BUCKET.list({ limit: 50 });
-		const lowerQuery = query.toLowerCase();
-		const matches = listed.objects.filter(obj => obj.key.toLowerCase().includes(lowerQuery));
 
 		if (matches.length === 0) {
 			await sendMessage(chatId, `❌ No files found for "${query}".`, env.TELEGRAM_BOT_TOKEN);
@@ -341,16 +119,13 @@ async function handleDirectDownloadSearch(chatId, query, env) {
 			for (const obj of matches) {
 				await sendFileFromR2(chatId, obj.key, env);
 			}
-		}	 } catch (error) {
-		await sendMessage(chatId, `❌ Error: ${error.message}`, env.TELEGRAM_BOT_TOKEN);
-	 }
-}
+		}
 
-// Override the previous handleSearchCommand to use this new logic
-async function handleSearchCommand(chatId, query, env) {
-	await handleDirectDownloadSearch(chatId, query, env);
+	} catch (error) {
+		console.error(error);
+		await sendMessage(chatId, `❌ Search Error: ${error.message}`, env.TELEGRAM_BOT_TOKEN);
+	}
 }
-
 
 // --- Feature: Send Actual File from R2 ---
 async function sendFileFromR2(chatId, key, env) {
@@ -362,16 +137,15 @@ async function sendFileFromR2(chatId, key, env) {
 			return;
 		}
 
-		// Check size (Limit to 50MB to prevent Worker crash)
+		// Check size (Limit to 50MB to prevent Worker crash/timeout)
 		if (object.size && object.size > 50 * 1024 * 1024) {
-			await sendMessage(chatId, `⚠️ File too large to send directly (${formatBytes(object.size)}). Please use public link if available.`, env.TELEGRAM_BOT_TOKEN);
+			await sendMessage(chatId, `⚠️ File too large to send directly (${formatBytes(object.size)}).`, env.TELEGRAM_BOT_TOKEN);
 			return;
 		}
 
 		const fileBuffer = await object.arrayBuffer();
 		const contentType = object.httpMetadata?.contentType || "application/octet-stream";
-		
-		// Extract filename
+				// Extract filename from key (format: timestamp_random_filename)
 		const parts = key.split('_');
 		const fileName = parts.slice(2).join('_') || key;
 
@@ -391,6 +165,7 @@ async function sendFileFromR2(chatId, key, env) {
 		if (!res.ok) {
 			throw new Error(`Telegram API Error: ${res.statusText}`);
 		}
+
 	} catch (error) {
 		console.error(`Error sending ${key}:`, error);
 		await sendMessage(chatId, `⚠️ Failed to send ${key}`, env.TELEGRAM_BOT_TOKEN);
@@ -420,7 +195,6 @@ async function handleFileUpload(chatId, fileObj, env) {
 				contentType: mimeType,
 			},
 		});
-
 		const msg = `✅ <b>Upload Successful!</b>\n\n` +
 					`📄 <b>Name:</b> ${fileName}\n` +
 					`📦 <b>Size:</b> ${formatBytes(fileObj.file_size)}\n` +
@@ -439,7 +213,8 @@ async function handleListCommand(chatId, env) {
 	try {
 		const listed = await env.MY_BUCKET.list({ limit: 10 });
 		
-		if (listed.objects.length === 0) {			await sendMessage(chatId, "📂 Bucket is empty.", env.TELEGRAM_BOT_TOKEN);
+		if (listed.objects.length === 0) {
+			await sendMessage(chatId, "📂 Bucket is empty.", env.TELEGRAM_BOT_TOKEN);
 			return;
 		}
 
@@ -468,8 +243,7 @@ async function handleDeleteCommand(chatId, key, env) {
 
 // --- Helpers ---
 
-async function getTelegramFileInfo(fileId, botToken) {
-	const url = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`;
+async function getTelegramFileInfo(fileId, botToken) {	const url = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`;
 	const res = await fetch(url);
 	return await res.json();
 }
@@ -488,7 +262,8 @@ async function sendMessage(chatId, text, botToken) {
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
 			chat_id: chatId,
-			text: text,			parse_mode: "HTML"
+			text: text,
+			parse_mode: "HTML"
 		})
 	});
 }
