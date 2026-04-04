@@ -27,9 +27,10 @@ async function processUpdate(update, env) {
 		if (text.startsWith("/start")) {
 			await sendMessage(chatId, 
 				"👋 <b>Welcome to Aitestzm Bot!</b>\n\n" +
-				"Send me any file (Document, Photo, Video, Audio) and I will upload it to Cloudflare R2.\n\n" +
+				"Send me any file to upload to R2.\n\n" +
 				"<b>Commands:</b>\n" +
-				"/list - Show last 10 uploaded files\n" +
+				"/search <keyword> - Fuzzy search files\n" +
+				"/list - Show last 10 files\n" +
 				"/help - Show this message", 
 				env.TELEGRAM_BOT_TOKEN
 			);
@@ -39,20 +40,30 @@ async function processUpdate(update, env) {
 		if (text.startsWith("/help")) {
 			await sendMessage(chatId, 
 				"📚 <b>Help</b>\n" +
-				"1. Send a file to upload.\n" +
-				"2. Use /list to see recent uploads.\n" +
-				"3. Admins can use /delete <key> to remove files.", 
+				"• <b>Upload:</b> Send any file.\n" +
+				"• <b>Search:</b> /search song\n" +
+				"• <b>Download:</b> Click the file in search results.\n" +
+				"• <b>Delete:</b> Admins only: /delete <key>", 
 				env.TELEGRAM_BOT_TOKEN
 			);
 			return;
 		}
+		if (text.startsWith("/search")) {
+			const query = text.replace("/search", "").trim();
+			if (!query) {
+				await sendMessage(chatId, "Usage: /search <keyword>", env.TELEGRAM_BOT_TOKEN);
+				return;
+			}
+			await handleSearchCommand(chatId, query, env);
+			return;
+		}
 
-		if (text.startsWith("/list")) {			await handleListCommand(chatId, env);
+		if (text.startsWith("/list")) {
+			await handleListCommand(chatId, env);
 			return;
 		}
 
 		if (text.startsWith("/delete")) {
-			// Admin Only Check
 			if (String(userId) !== env.ADMIN_ID) {
 				await sendMessage(chatId, "🚫 Admins only.", env.TELEGRAM_BOT_TOKEN);
 				return;
@@ -78,6 +89,86 @@ async function processUpdate(update, env) {
 	}
 }
 
+// --- Feature: Fuzzy Search ---
+async function handleSearchCommand(chatId, query, env) {
+	try {
+		await sendMessage(chatId, `🔍 Searching for "${query}"...`, env.TELEGRAM_BOT_TOKEN);
+
+		// 1. List all objects (Limit to 1000 for performance/memory)
+		// Note: In a production app with many files, use a Database (D1) instead.
+		const listed = await env.MY_BUCKET.list({ limit: 1000 });		
+		// 2. Filter in Memory (Fuzzy-ish: Case-insensitive includes)
+		const lowerQuery = query.toLowerCase();
+		const matches = listed.objects.filter(obj => 
+			obj.key.toLowerCase().includes(lowerQuery)
+		);
+
+		if (matches.length === 0) {
+			await sendMessage(chatId, `❌ No files found for "${query}".`, env.TELEGRAM_BOT_TOKEN);
+			return;
+		}
+
+		// 3. Send Results as Files (Limit to top 5 to avoid spamming)
+		const topMatches = matches.slice(0, 5);
+		
+		await sendMessage(chatId, `✅ Found ${matches.length} files. Sending top ${topMatches.length}:`, env.TELEGRAM_BOT_TOKEN);
+
+		for (const obj of topMatches) {
+			await sendFileFromR2(chatId, obj.key, env);
+		}
+
+	} catch (error) {
+		console.error(error);
+		await sendMessage(chatId, `❌ Search Error: ${error.message}`, env.TELEGRAM_BOT_TOKEN);
+	}
+}
+
+// --- Feature: Send Actual File from R2 ---
+async function sendFileFromR2(chatId, key, env) {
+	try {
+		// 1. Get Object from R2
+		const object = await env.MY_BUCKET.get(key);
+
+		if (object === null) {
+			await sendMessage(chatId, `❌ File not found in storage: ${key}`, env.TELEGRAM_BOT_TOKEN);
+			return;
+		}
+
+		// 2. Read as ArrayBuffer (Warning: Memory usage equals file size)
+		const fileBuffer = await object.arrayBuffer();
+		const contentType = object.httpMetadata?.contentType || "application/octet-stream";
+		
+		// Extract original filename from key (remove timestamp_random_)
+		// Key format: 1712239200_xyz_originalname.pdf
+		const parts = key.split('_');
+		const fileName = parts.slice(2).join('_') || key;
+
+		// 3. Send to Telegram as Document
+		const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendDocument`;
+				// We need FormData to send binary data
+		const formData = new FormData();
+		formData.append("chat_id", chatId);
+		formData.append("document", new Blob([fileBuffer], { type: contentType }), fileName);
+		formData.append("caption", `📄 <b>${fileName}</b>\n📦 Size: ${formatBytes(fileBuffer.byteLength)}`);
+		formData.append("parse_mode", "HTML");
+
+		const res = await fetch(url, {
+			method: "POST",
+			body: formData
+		});
+
+		if (!res.ok) {
+			const errText = await res.text();
+			throw new Error(`Telegram Upload Failed: ${errText}`);
+		}
+
+	} catch (error) {
+		console.error(`Error sending file ${key}:`, error);
+		// Don't crash the whole search if one file fails
+		await sendMessage(chatId, `⚠️ Failed to send ${key}: ${error.message}`, env.TELEGRAM_BOT_TOKEN);
+	}
+}
+
 // --- Feature: File Upload ---
 async function handleFileUpload(chatId, fileObj, env) {
 	try {
@@ -92,33 +183,18 @@ async function handleFileUpload(chatId, fileObj, env) {
 
 		const fileBuffer = await downloadTelegramFile(filePath, env.TELEGRAM_BOT_TOKEN);
 
-		// Generate Key
 		const timestamp = Date.now();
 		const randomStr = Math.random().toString(36).substring(7);
 		const r2Key = `${timestamp}_${randomStr}_${fileName}`;
-		// Upload to R2
-		// FIXED: Added colon after httpMeta
+
 		await env.MY_BUCKET.put(r2Key, fileBuffer, {
-			httpMetadata: {
+			httpMeta {
 				contentType: mimeType,
 			},
 		});
 
-		// Construct Public URL 
-		// Note: Ensure PUBLIC_R2_DOMAIN is set in wrangler.toml or as a secret/variable
-		const publicDomain = env.PUBLIC_R2_DOMAIN || ""; 
-		let linkText = "";
-		
-		if (publicDomain) {
-			const publicUrl = `${publicDomain}/${r2Key}`;
-			linkText = `\n🔗 <b>Link:</b> <a href="${publicUrl}">Download File</a>`;
-		} else {
-			linkText = `\n<i>(Public domain not configured. File saved with key below.)</i>`;
-		}
-
 		const msg = `✅ <b>Upload Successful!</b>\n\n` +
-					`📄 <b>Name:</b> ${fileName}\n` +
-					`📦 <b>Size:</b> ${formatBytes(fileObj.file_size)}${linkText}\n` +
+					`📄 <b>Name:</b> ${fileName}\n` +					`📦 <b>Size:</b> ${formatBytes(fileObj.file_size)}\n` +
 					`🔑 <b>Key:</b> \`${r2Key}\``;
 
 		await sendMessage(chatId, msg, env.TELEGRAM_BOT_TOKEN);
@@ -129,10 +205,9 @@ async function handleFileUpload(chatId, fileObj, env) {
 	}
 }
 
-// --- Feature: List Files ---
+// --- Feature: List Files (Text Only) ---
 async function handleListCommand(chatId, env) {
 	try {
-		// List objects in R2 (limited to 10 for simplicity)
 		const listed = await env.MY_BUCKET.list({ limit: 10 });
 		
 		if (listed.objects.length === 0) {
@@ -142,10 +217,10 @@ async function handleListCommand(chatId, env) {
 
 		let text = "📂 <b>Recent Files:</b>\n\n";
 		listed.objects.forEach((obj, index) => {
-			// Truncate long names
-			const displayName = obj.key.length > 30 ? obj.key.substring(0, 30) + "..." : obj.key;
 			text += `${index + 1}. <code>${obj.key}</code> (${formatBytes(obj.size)})\n`;
 		});
+		text += "\n<i>Use /search <name> to download.</i>";
+
 		await sendMessage(chatId, text, env.TELEGRAM_BOT_TOKEN);
 
 	} catch (error) {
@@ -168,8 +243,7 @@ async function handleDeleteCommand(chatId, key, env) {
 async function getTelegramFileInfo(fileId, botToken) {
 	const url = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`;
 	const res = await fetch(url);
-	return await res.json();
-}
+	return await res.json();}
 
 async function downloadTelegramFile(filePath, botToken) {
 	const url = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
@@ -194,7 +268,8 @@ async function sendMessage(chatId, text, botToken) {
 function formatBytes(bytes, decimals = 2) {
 	if (bytes === 0) return '0 Bytes';
 	const k = 1024;
-	const dm = decimals < 0 ? 0 : decimals;	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+	const dm = decimals < 0 ? 0 : decimals;
+	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
 	const i = Math.floor(Math.log(bytes) / Math.log(k));
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
