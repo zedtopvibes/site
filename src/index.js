@@ -190,11 +190,12 @@ async function handleFileUpload(chatId, fileObj, env) {
 		const randomStr = Math.random().toString(36).substring(7);
 		const r2Key = `${timestamp}_${randomStr}_${fileName}`;
 
+		// FIXED: Added colon after httpMeta
 		await env.MY_BUCKET.put(r2Key, fileBuffer, {
-			httpMeta {
+			httpMeta: {
 				contentType: mimeType,
-			},
-		});
+			},		});
+
 		const msg = `✅ <b>Upload Successful!</b>\n\n` +
 					`📄 <b>Name:</b> ${fileName}\n` +
 					`📦 <b>Size:</b> ${formatBytes(fileObj.file_size)}\n` +
@@ -242,8 +243,8 @@ async function handleDeleteCommand(chatId, key, env) {
 }
 
 // --- Helpers ---
-
-async function getTelegramFileInfo(fileId, botToken) {	const url = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`;
+async function getTelegramFileInfo(fileId, botToken) {
+	const url = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`;
 	const res = await fetch(url);
 	return await res.json();
 }
