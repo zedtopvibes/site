@@ -2,19 +2,15 @@ name = "aitestzmbot"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# 1. D1 Database Binding
-# This connects 'env.DB' in your code to your actual database
-[[d1_databases]]
-binding = "DB" 
-database_name = "tgdata"
-database_id = "8417c1a2-e920-4b5d-9394-79c9f56ec0f4"
+# 1. R2 Storage Binding (This replaces the database)
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "music-bot-files"
 
-# 2. AI Binding
-# If you decide to use AI features (like caption generation) later
-[ai]
-binding = "AI"
-
-# 3. Environment Variables
-# Use these for public info. For the Bot Token, use SECRETS.
+# 2. Public Bot Configurations
 [vars]
-# You can put non-sensitive config here if needed
+ADMIN_ID = "5672184873"
+BOT_USERNAME = "aitestzmbot"
+
+# Note: TELEGRAM_BOT_TOKEN is NOT put here for security. 
+# It is added via the Cloudflare Dashboard Secrets or 'wrangler secret put'.
