@@ -3,7 +3,7 @@ export default {
 		if (request.method === "POST") {
 			try {
 				const update = await request.json();
-				// Handle both messages and button clicks (callback_query)
+				// Ensure the worker handles both messages and button clicks
 				ctx.waitUntil(processUpdate(update, env));
 				return new Response("OK", { status: 200 });
 			} catch (error) {
@@ -16,15 +16,15 @@ export default {
 };
 
 async function processUpdate(update, env) {
-	// 1. Handle Button Clicks (Callback Queries)
+	// 1. Handle Button Clicks (Callback Queries for Download)
 	if (update.callback_query) {
 		const chatId = update.callback_query.message.chat.id;
-		const data = update.callback_query.data; // This is the R2 Key
-		const messageId = update.callback_query.message.message_id;
-
+		const data = update.callback_query.data; 
+		
 		if (data.startsWith("dl:")) {
 			const key = data.replace("dl:", "");
-			await answerCallback(update.callback_query.id, "🚀 Fetching file...", env.TELEGRAM_BOT_TOKEN);
+			// Show a quick "toast" notification on the user's screen
+			await answerCallback(update.callback_query.id, "🚀 Preparing your file...", env.TELEGRAM_BOT_TOKEN);
 			await sendFileFromR2(chatId, key, env);
 		}
 		return;
@@ -35,14 +35,16 @@ async function processUpdate(update, env) {
 	const chatId = message.chat.id;
 	const text = message.text;
 
-	// 2. Handle Commands
+	// 2. Handle Commands (/start, /list, /search)
 	if (text) {
 		if (text.startsWith("/start") || text.startsWith("/help")) {
-			const welcome = "👋 <b>Aitestzm Storage</b>\n\n" +
-						  "• Send any file to upload\n" +
-						  "• Use /list to see files\n" +
-						  "• Use /search &lt;name&gt; to find files";
-			await sendMessage(chatId, welcome, env.TELEGRAM_BOT_TOKEN);
+			await sendMessage(chatId, 
+				"👋 <b>Aitestzm Storage</b>\n\n" +
+				"• <b>Upload:</b> Just send me any file!\n" +
+				"• <b>List:</b> Use /list to see recent files\n" +
+				"• <b>Search:</b> Use /search &lt;name&gt;", 
+				env.TELEGRAM_BOT_TOKEN
+			);
 			return;
 		}
 
@@ -61,29 +63,86 @@ async function processUpdate(update, env) {
 		}
 	}
 
-	// 3. Handle File Uploads
-	const fileObj = message.document || message.video || message.audio || (message.photo ? message.photo[message.photo.length - 1] : null);
+	// 3. Handle File Uploads (Restored & Enhanced)
+	const fileObj = message.document || 
+					message.video || 
+					message.audio || 
+					(message.photo ? message.photo[message.photo.length - 1] : null);
+
 	if (fileObj) {
 		await handleFileUpload(chatId, fileObj, env);
+		// Clean up the user's original file message to keep chat history tidy (Optional)
+		// await deleteMessage(chatId, message.message_id, env.TELEGRAM_BOT_TOKEN); 
 	}
 }
 
-// --- List Files with Buttons ---
+// --- Feature: Upload with Animation ---
+async function handleFileUpload(chatId, fileObj, env) {
+	// Send initial status message
+	const status = await sendMessage(chatId, "📡 <b>Connecting...</b>\n[▒▒▒▒▒▒▒▒▒▒] 0%", env.TELEGRAM_BOT_TOKEN);
+	
+	try {
+		// Update 1: Fetching from Telegram
+		await editMessage(chatId, status.result.message_id, "📥 <b>Downloading from Telegram...</b>\n[████▒▒▒▒▒▒] 40%", env.TELEGRAM_BOT_TOKEN);
+		
+		const fileInfo = await (await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileObj.file_id}`)).json();
+		const fileBuffer = await (await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileInfo.result.file_path}`)).arrayBuffer();
+
+		// Update 2: Pushing to R2
+		await editMessage(chatId, status.result.message_id, "☁️ <b>Saving to Cloud Storage...</b>\n[████████▒▒] 80%", env.TELEGRAM_BOT_TOKEN);
+		
+		const fileName = fileObj.file_name || `file_${Date.now()}`;
+		const r2Key = `${Date.now()}_${Math.random().toString(36).substring(7)}_${fileName}`;
+		
+		await env.MY_BUCKET.put(r2Key, fileBuffer, {
+			httpMeta: { contentType: fileObj.mime_type || "application/octet-stream" }
+		});
+
+		// Final Success State
+		await editMessage(chatId, status.result.message_id, `✨ <b>Upload Complete!</b>\n📄 <code>${fileName}</code>\n🔑 Key: <code>${r2Key}</code>`, env.TELEGRAM_BOT_TOKEN);
+
+	} catch (error) {
+		await editMessage(chatId, status.result.message_id, "❌ <b>Upload Failed.</b>", env.TELEGRAM_BOT_TOKEN);
+	}
+}
+
+// --- Feature: Send File (Self-Cleaning) ---
+async function sendFileFromR2(chatId, key, env) {
+	const prog = await sendMessage(chatId, "⏳ <i>Retrieving file...</i>", env.TELEGRAM_BOT_TOKEN);
+	try {
+		await sendChatAction(chatId, "upload_document", env.TELEGRAM_BOT_TOKEN);
+		const object = await env.MY_BUCKET.get(key);
+		const fileBuffer = await object.arrayBuffer();
+		const fileName = key.split('_').slice(2).join('_') || key;
+
+		const formData = new FormData();
+		formData.append("chat_id", chatId);
+		formData.append("document", new Blob([fileBuffer]), fileName);
+		formData.append("caption", `✅ <b>File:</b> ${fileName}`);
+		formData.append("parse_mode", "HTML");
+
+		await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: formData });
+		
+		// Remove the "Retrieving" message once the file is actually sent
+		await deleteMessage(chatId, prog.result.message_id, env.TELEGRAM_BOT_TOKEN);
+	} catch (e) {
+		await editMessage(chatId, prog.result.message_id, "⚠️ Error sending file.", env.TELEGRAM_BOT_TOKEN);
+	}
+}
+
+// --- Feature: List/Search with Inline Buttons ---
 async function handleListCommand(chatId, env) {
 	const listed = await env.MY_BUCKET.list({ limit: 10 });
-	if (listed.objects.length === 0) return sendMessage(chatId, "📂 Bucket is empty.", env.TELEGRAM_BOT_TOKEN);
+	if (listed.objects.length === 0) return sendMessage(chatId, "📂 Storage is empty.", env.TELEGRAM_BOT_TOKEN);
 
 	const buttons = listed.objects.map(obj => ([{
 		text: `📄 ${obj.key.split('_').slice(2).join('_') || obj.key}`,
 		callback_data: `dl:${obj.key}`
 	}]));
 
-	await sendMessage(chatId, "📂 <b>Recent Files:</b>\nClick a file to download.", env.TELEGRAM_BOT_TOKEN, {
-		inline_keyboard: buttons
-	});
+	await sendMessage(chatId, "📂 <b>Recent Files:</b>\nTap to download:", env.TELEGRAM_BOT_TOKEN, { inline_keyboard: buttons });
 }
 
-// --- Search with Buttons ---
 async function handleSearchCommand(chatId, query, env) {
 	const status = await sendMessage(chatId, `🔍 Searching for "${query}"...`, env.TELEGRAM_BOT_TOKEN);
 	const listed = await env.MY_BUCKET.list({ limit: 50 });
@@ -99,60 +158,17 @@ async function handleSearchCommand(chatId, query, env) {
 		callback_data: `dl:${obj.key}`
 	}]));
 
-	await editMessage(chatId, status.result.message_id, `✅ Found ${matches.length} matches:`, env.TELEGRAM_BOT_TOKEN, {
-		inline_keyboard: buttons
-	});
+	await editMessage(chatId, status.result.message_id, `✅ Matches for "${query}":`, env.TELEGRAM_BOT_TOKEN, { inline_keyboard: buttons });
 }
 
-// --- Sending File (Self-Cleaning) ---
-async function sendFileFromR2(chatId, key, env) {
-	const prog = await sendMessage(chatId, "⏳ <i>Preparing file...</i>", env.TELEGRAM_BOT_TOKEN);
-	try {
-		await sendChatAction(chatId, "upload_document", env.TELEGRAM_BOT_TOKEN);
-		const object = await env.MY_BUCKET.get(key);
-		const fileBuffer = await object.arrayBuffer();
-		const fileName = key.split('_').slice(2).join('_') || key;
-
-		const formData = new FormData();
-		formData.append("chat_id", chatId);
-		formData.append("document", new Blob([fileBuffer]), fileName);
-		formData.append("caption", `✅ <b>Sent:</b> <code>${fileName}</code>`);
-		formData.append("parse_mode", "HTML");
-
-		await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: formData });
-		await deleteMessage(chatId, prog.result.message_id, env.TELEGRAM_BOT_TOKEN); // Remove "Preparing" msg
-	} catch (e) {
-		await editMessage(chatId, prog.result.message_id, "⚠️ Failed to send file.", env.TELEGRAM_BOT_TOKEN);
-	}
-}
-
-// --- Upload (Self-Cleaning) ---
-async function handleFileUpload(chatId, fileObj, env) {
-	const status = await sendMessage(chatId, "📡 <b>Uploading...</b>\n[▒▒▒▒▒▒▒▒▒▒] 0%", env.TELEGRAM_BOT_TOKEN);
-	try {
-		const fileInfo = await (await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileObj.file_id}`)).json();
-		const fileBuffer = await (await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileInfo.result.file_path}`)).arrayBuffer();
-
-		const fileName = fileObj.file_name || `file_${Date.now()}`;
-		const r2Key = `${Date.now()}_${Math.random().toString(36).substring(7)}_${fileName}`;
-		
-		await env.MY_BUCKET.put(r2Key, fileBuffer, { httpMeta: { contentType: fileObj.mime_type } });
-
-		await editMessage(chatId, status.result.message_id, `✨ <b>Success!</b>\n📄 <code>${fileName}</code>`, env.TELEGRAM_BOT_TOKEN);
-		// Optional: Delete success message after 10 seconds to keep chat pristine
-		// setTimeout(() => deleteMessage(chatId, status.result.message_id, env.TELEGRAM_BOT_TOKEN), 10000);
-	} catch (e) {
-		await editMessage(chatId, status.result.message_id, "❌ Upload Failed.", env.TELEGRAM_BOT_TOKEN);
-	}
-}
-
-// --- Clean Helpers ---
+// --- Standard Helpers ---
 async function sendMessage(chatId, text, token, replyMarkup = null) {
-	return await (await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+	const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: "HTML", reply_markup: replyMarkup })
-	})).json();
+	});
+	return await res.json();
 }
 
 async function editMessage(chatId, msgId, text, token, replyMarkup = null) {
