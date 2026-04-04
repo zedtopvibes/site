@@ -97,21 +97,28 @@ async function handleFileUpload(chatId, fileObj, env) {
 		const randomStr = Math.random().toString(36).substring(7);
 		const r2Key = `${timestamp}_${randomStr}_${fileName}`;
 		// Upload to R2
+		// FIXED: Added colon after httpMeta
 		await env.MY_BUCKET.put(r2Key, fileBuffer, {
-			httpMeta {
+			httpMetadata: {
 				contentType: mimeType,
 			},
 		});
 
-		// Construct Public URL (Replace with your actual R2 public domain)
-		// If you haven't set up a custom domain, use the default r2.dev domain if enabled
-		const publicDomain = env.PUBLIC_R2_DOMAIN || "https://pub-xxxx.r2.dev"; // Set PUBLIC_R2_DOMAIN in wrangler.toml vars if you have one
-		const publicUrl = `${publicDomain}/${r2Key}`;
+		// Construct Public URL 
+		// Note: Ensure PUBLIC_R2_DOMAIN is set in wrangler.toml or as a secret/variable
+		const publicDomain = env.PUBLIC_R2_DOMAIN || ""; 
+		let linkText = "";
+		
+		if (publicDomain) {
+			const publicUrl = `${publicDomain}/${r2Key}`;
+			linkText = `\n🔗 <b>Link:</b> <a href="${publicUrl}">Download File</a>`;
+		} else {
+			linkText = `\n<i>(Public domain not configured. File saved with key below.)</i>`;
+		}
 
 		const msg = `✅ <b>Upload Successful!</b>\n\n` +
 					`📄 <b>Name:</b> ${fileName}\n` +
-					`📦 <b>Size:</b> ${formatBytes(fileObj.file_size)}\n` +
-					`🔗 <b>Link:</b> <a href="${publicUrl}">Download File</a>\n` +
+					`📦 <b>Size:</b> ${formatBytes(fileObj.file_size)}${linkText}\n` +
 					`🔑 <b>Key:</b> \`${r2Key}\``;
 
 		await sendMessage(chatId, msg, env.TELEGRAM_BOT_TOKEN);
@@ -139,13 +146,12 @@ async function handleListCommand(chatId, env) {
 			const displayName = obj.key.length > 30 ? obj.key.substring(0, 30) + "..." : obj.key;
 			text += `${index + 1}. <code>${obj.key}</code> (${formatBytes(obj.size)})\n`;
 		});
-
-		// Telegram message limit is 4096 chars, this should be safe for 10 items
 		await sendMessage(chatId, text, env.TELEGRAM_BOT_TOKEN);
 
 	} catch (error) {
 		await sendMessage(chatId, `❌ Error listing files: ${error.message}`, env.TELEGRAM_BOT_TOKEN);
-	}}
+	}
+}
 
 // --- Feature: Delete File (Admin) ---
 async function handleDeleteCommand(chatId, key, env) {
@@ -188,8 +194,7 @@ async function sendMessage(chatId, text, botToken) {
 function formatBytes(bytes, decimals = 2) {
 	if (bytes === 0) return '0 Bytes';
 	const k = 1024;
-	const dm = decimals < 0 ? 0 : decimals;
-	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+	const dm = decimals < 0 ? 0 : decimals;	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
 	const i = Math.floor(Math.log(bytes) / Math.log(k));
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
